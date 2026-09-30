@@ -365,7 +365,20 @@ public class MainActivity extends Activity
     // Start (or restart) this window's native pipeline, but only if the daemon
     // socket is still a live socket. The daemon can go down after launch, so
     // re-check on every (re)connect; if it is gone, report it and exit the window.
+    // Evidence that does not depend on logcat: this device does not show this app own log
+    // lines, so every decision the window makes is also appended to a file root can read.
+    private void ev(String what) {
+        try {
+            java.io.FileOutputStream out =
+                    new java.io.FileOutputStream(new java.io.File(getFilesDir(), "java_bridge.log"), true);
+            out.write((what + "\n").getBytes());
+            out.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void startNative(android.view.Surface surface) {
+        ev("startNative: path=" + resolveSocketPath() + " isSocket=" + isSocketFile(resolveSocketPath()));
         if (!isSocketFile(resolveSocketPath())) {
             android.widget.Toast.makeText(this, "Deamon Down",
                     android.widget.Toast.LENGTH_SHORT).show();
@@ -494,6 +507,8 @@ public class MainActivity extends Activity
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Log.e(TAG, "onCreate reached -- if this line is invisible, nothing this app logs is");
+
         super.onCreate(savedInstanceState);
 
         setupMediaAudio();
@@ -1766,6 +1781,9 @@ public class MainActivity extends Activity
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         Log.i(TAG, "surfaceChanged: " + width + "x" + height);
+        // E level on purpose: see native_consumer.c nativeStart.
+        Log.e(TAG, "surfaceChanged reached: " + width + "x" + height);
+        ev("surfaceChanged " + width + "x" + height);
         viewWidth = width;
         viewHeight = height;
         updateDisplayRotation();

@@ -16,6 +16,7 @@
 #define LOG_TAG "AnlandAhbBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 // AHardwareBuffer_createFromHandle is a SystemApi: the NDK does not declare it, and the
 // platform does not care who calls it.  libnativewindow.so is where it is exported.
@@ -28,6 +29,8 @@ typedef int (*create_from_handle_fn)(const AHardwareBuffer_Desc *, const void *,
 enum { AHB_HANDLE_TYPE_TRY_FIRST = 2, AHB_HANDLE_TYPE_TRY_SECOND = 1 };
 
 static create_from_handle_fn s_create;
+typedef const native_handle_t *(*get_native_handle_fn)(const AHardwareBuffer *);
+static get_native_handle_fn s_get_handle;
 static bool s_loaded;
 static uint64_t s_last_usage;
 static int s_sock = -2;  // -2 = never tried, -1 = no bridge listening
@@ -43,6 +46,7 @@ static void load_api(void)
         return;
     }
     s_create = (create_from_handle_fn)dlsym(lib, "AHardwareBuffer_createFromHandle");
+    s_get_handle = (get_native_handle_fn)dlsym(lib, "AHardwareBuffer_getNativeHandle");
     LOGI("AHardwareBuffer_createFromHandle = %p", (void *)s_create);
 }
 
@@ -53,26 +57,35 @@ uint64_t ahb_bridge_last_usage(void)
 
 bool ahb_bridge_wrap(const ANativeWindowBuffer *anb, void **out_ahb, char *why, unsigned why_size)
 {
+    if (!anb)
+        return ahb_bridge_wrap_desc(NULL, 0, 0, 0, 0, out_ahb, why, why_size);
+    return ahb_bridge_wrap_desc(anb->handle, (uint32_t)anb->width, (uint32_t)anb->height,
+                               (uint32_t)anb->stride, (uint32_t)anb->format, out_ahb, why, why_size);
+}
+
+bool ahb_bridge_wrap_desc(const native_handle_t *handle, uint32_t width, uint32_t height, uint32_t stride,
+                          uint32_t format, void **out_ahb, char *why, unsigned why_size)
+{
     *out_ahb = NULL;
     load_api();
     if (!s_create) {
         snprintf(why, why_size, "AHardwareBuffer_createFromHandle is not loadable in this process");
         return false;
     }
-    if (!anb || !anb->handle) {
+    if (!handle) {
         snprintf(why, why_size, "the dequeued buffer carries no native handle");
         return false;
     }
 
     AHardwareBuffer_Desc d;
     memset(&d, 0, sizeof(d));
-    d.width = (uint32_t)anb->width;
-    d.height = (uint32_t)anb->height;
+    d.width = width;
+    d.height = height;
     d.layers = 1;
     // HAL_PIXEL_FORMAT_* and AHARDWAREBUFFER_FORMAT_* agree on the packed 32-bit formats,
     // which is the only kind a SurfaceView queue hands out here.
-    d.format = (uint32_t)anb->format;
-    d.stride = (uint32_t)anb->stride;
+    d.format = format;
+    d.stride = stride;
 
     // What the render server needs first: to sample the image and to draw into it.
     // CPU read is asked for FIRST even though the render server only needs the two GPU
@@ -86,24 +99,57 @@ bool ahb_bridge_wrap(const ANativeWindowBuffer *anb, void **out_ahb, char *why, 
         AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT,
     };
     const int types[] = {AHB_HANDLE_TYPE_TRY_FIRST, AHB_HANDLE_TYPE_TRY_SECOND};
+    ahb_bridge_note("wrap: %ux%u format=0x%x stride=%u numFds=%d numInts=%d", d.width, d.height, d.format, d.stride,
+                    handle->numFds, handle->numInts);
     int last_rc = 0;
 
     for (unsigned t = 0; t < sizeof(types) / sizeof(types[0]); ++t) {
         for (unsigned u = 0; u < sizeof(usages) / sizeof(usages[0]); ++u) {
             d.usage = usages[u];
             AHardwareBuffer *ahb = NULL;
-            const int rc = s_create(&d, anb->handle, types[t], &ahb);
+            const int rc = s_create(&d, handle, types[t], &ahb);
+            ahb_bridge_note("  rung type=%d usage=0x%llx -> rc=%d ahb=%p", types[t],
+                            (unsigned long long)usages[u], rc, (void *)ahb);
             last_rc = rc;
             if (rc == 0 && ahb) {
                 s_last_usage = usages[u];
+                ahb_bridge_note("  accepted: type=%d usage=0x%llx", types[t],
+                                (unsigned long long)usages[u]);
                 *out_ahb = ahb;
                 return true;
             }
         }
     }
+    ahb_bridge_note("  every rung refused it (last rc=%d)", last_rc);
+    if (s_get_handle) {
+        /* SIDE BY SIDE, same descriptor, same call, different provenance: a buffer this process
+         * allocated itself against the one the display queue handed over.  It separates "the
+         * platform will not take this descriptor" from "the platform will not take THIS buffer". */
+        AHardwareBuffer_Desc ad;
+        memset(&ad, 0, sizeof(ad));
+        ad.width = width;
+        ad.height = height;
+        ad.layers = 1;
+        ad.format = format;
+        ad.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
+        AHardwareBuffer *own = NULL;
+        if (AHardwareBuffer_allocate(&ad, &own) == 0 && own) {
+            const native_handle_t *oh = s_get_handle(own);
+            AHardwareBuffer *again = NULL;
+            const int brc = oh ? s_create(&ad, oh, 2, &again) : -1;
+            ahb_bridge_note("  SELF-ALLOCATED %ux%u: rc=%d (numFds=%d numInts=%d)", width, height, brc,
+                            oh ? oh->numFds : -1, oh ? oh->numInts : -1);
+            /* Deliberately NOT released: `again` and `own` wrap the same allocation, and
+             * releasing both is the double free that deadlocked this thread inside the
+             * allocator (the same shape the standalone probe died on).  One small buffer per
+             * run is a fair price for the measurement. */
+            (void)again;
+            (void)own;
+        }
+    }
     snprintf(why, why_size,
              "createFromHandle refused this handle: %ux%u format=0x%x stride=%u numFds=%d numInts=%d, last rc=%d",
-             d.width, d.height, d.format, d.stride, anb->handle->numFds, anb->handle->numInts, last_rc);
+             width, height, format, stride, handle->numFds, handle->numInts, last_rc);
     return false;
 }
 
@@ -167,19 +213,43 @@ static void hex4(const uint8_t v[4], char *out, size_t n)
     snprintf(out, n, "%02x%02x%02x%02x", v[0], v[1], v[2], v[3]);
 }
 
+// The app own logcat lines are not visible on this device (measured: the framework code
+// running in the same process logs fine while this app own calls never appear), so every step
+// of the bridge also lands in a file this build owns and root can read.
+void ahb_bridge_note(const char *fmt, ...)
+{
+    FILE *f = fopen("/data/data/com.anland.consumer.goldtest/files/ahb_bridge.log", "a");
+    if (!f)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc((int)10, f);
+    fclose(f);
+}
+
 bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height, uint32_t stride_bytes,
                       uint32_t format, uint64_t usage, const char *note)
 {
     if (!ahb)
         return false;
     const int fd = bridge_socket();
+    ahb_bridge_note("offer buffer %u: bridge fd=%d", index, fd);
+    LOGE("bridge: offer buffer %u, fd=%d", index, fd);
     if (fd < 0)
         return false;
 
-    if (AHardwareBuffer_sendHandleToUnixSocket((const AHardwareBuffer *)ahb, fd) != 0) {
-        LOGW("AHardwareBuffer_sendHandleToUnixSocket -> errno=%d(%s)", errno, strerror(errno));
-        return false;
-    }
+    // The return value is recorded, NOT obeyed.  Measured on the device: this call has been
+    // seen to report a failure while the descriptor still crossed, and bailing on it is what
+    // produced a receiver holding a handle with no description to go with it -- the failure
+    // then looked like a protocol error on the far side.  The sideband is the part this side
+    // controls, so it goes out either way and the receiver decides what it got.
+    const int sendRc = AHardwareBuffer_sendHandleToUnixSocket((const AHardwareBuffer *)ahb, fd);
+    ahb_bridge_note("  sendHandle rc=%d (ahb=%p)", sendRc, ahb);
+    if (sendRc != 0)
+        LOGW("AHardwareBuffer_sendHandleToUnixSocket -> rc=%d errno=%d(%s); sending the description anyway",
+             sendRc, errno, strerror(errno));
     struct ahb_offer offer;
     memset(&offer, 0, sizeof(offer));
     offer.magic = AHB_BRIDGE_MAGIC;
@@ -193,6 +263,7 @@ bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height
     offer.usage_hi = (uint32_t)(usage >> 32);
     if (note)
         strncpy(offer.note, note, sizeof(offer.note) - 1);
+    ahb_bridge_note("  sideband write about to go out: %zu bytes", sizeof(offer));
     if (!write_all(fd, &offer, sizeof(offer))) {
         LOGW("the image bridge closed while offering buffer %u; dropping it until the next window", index);
         close(fd);
@@ -214,6 +285,7 @@ bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height
     memset(&ack, 0, sizeof(ack));
     if (!read_all(fd, &ack, sizeof(ack)) || ack.magic != AHB_BRIDGE_MAGIC) {
         LOGI("buffer %u: nothing answered on the bridge, so nothing is drawing into it", index);
+        return false;
         return true;
     }
 
@@ -246,9 +318,10 @@ bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height
     hex4(ack.color, ackS, sizeof(ackS));
     hex4(seen.observed, firstS, sizeof(firstS));
     hex4(seen.observed_corner, cornerS, sizeof(cornerS));
+    const bool drew = ack.imported && ack.drawn;
     LOGI("buffer %u: server imported=%u drawn=%u fence=%u colour=%s | host saw %s / %s%s", index, ack.imported,
          ack.drawn, ack.fence_ok, ackS, firstS, cornerS, seen.locked ? "" : " (the lock was refused)");
-    return true;
+    return drew;
 }
 
 void ahb_bridge_release(void *ahb)

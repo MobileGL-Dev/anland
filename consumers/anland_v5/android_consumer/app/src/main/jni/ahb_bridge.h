@@ -83,6 +83,16 @@ struct ahb_seen {  // host -> receiver: what the host's own view of the buffer h
 // The usage is the one part of the description a dequeued buffer cannot tell us, so a small
 // ladder of them is tried and the accepted one is what the offer carries: a refusal is then
 // a fact about this handle on this device instead of "the platform cannot wrap at all".
+// The same evidence channel the bridge uses, exposed so the rest of the native pipeline can
+// say where it got to: this device does not show this app own logcat lines, and a pipeline
+// that is invisible cannot be debugged.
+void ahb_bridge_note(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+// The same wrap with the geometry spelled out: what an import has to be told is the geometry
+// the buffers were ALLOCATED at, and the surface does not always report that (a cropped
+// surface reports its own size, and the mapper answers BAD_VALUE for the mismatch).
+bool ahb_bridge_wrap_desc(const native_handle_t *handle, uint32_t width, uint32_t height, uint32_t stride,
+                          uint32_t format, void **out_ahb, char *why, unsigned why_size);
 bool ahb_bridge_wrap(const ANativeWindowBuffer *anb, void **out_ahb, char *why, unsigned why_size);
 
 // The usage bits the last successful wrap was accepted with, for the offer's description.

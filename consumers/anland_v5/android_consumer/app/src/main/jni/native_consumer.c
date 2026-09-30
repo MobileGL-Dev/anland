@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "ahb_bridge.h"
+#include "server_frame.h"
 #include "anw_hidden.h"
 #include "camera_service.h"
 #include "display_consumer.h"
@@ -137,6 +138,7 @@ static void topapp_handle_scheduling_event(struct consumer_state *s,
 
 static int collect_dmabufs(struct consumer_state *s)
 {
+    ahb_bridge_note("collect_dmabufs entered");
     ANativeWindow *win = s->window;
     int target = s->buf_count;
     int found = 0;
@@ -201,7 +203,35 @@ static int collect_dmabufs(struct consumer_state *s)
          * allocated for itself. */
         {
             char why[192];
-            if (ahb_bridge_wrap(anb, &s->ahb[found], why, sizeof(why))) {
+            ahb_bridge_note("buf[%d]: anb=%dx%d stride=%d format=0x%x | set=%dx%d | fd=%d", found,
+                            anb->width, anb->height, anb->stride, anb->format,
+                            s->screen_w, s->screen_h,
+                            s->dmabuf_fds[found]);
+            bool wrapped = ahb_bridge_wrap(anb, &s->ahb[found], why, sizeof(why));
+            if (!wrapped) {
+                /* THE DESCRIPTOR AN IMPORT NEEDS IS THE GEOMETRY THE BUFFERS WERE ALLOCATED AT,
+                 * and that is the geometry this side handed to setBuffersGeometry (see do_connect),
+                 * not the size the surface reports back: a window that is not the full panel
+                 * reports its own height while the allocation keeps the one it was made with,
+                 * and the mapper answers BAD_VALUE (3) for the mismatch -- measured, and the
+                 * reason the same call succeeded while the window happened to be full height. */
+                ahb_bridge_note("  retrying with the geometry the queue was set to: %dx%d", s->screen_w,
+                                s->screen_h);
+                wrapped = ahb_bridge_wrap_desc(anb->handle, (uint32_t)s->screen_w, (uint32_t)s->screen_h,
+                                               (uint32_t)anb->stride, (uint32_t)anb->format,
+                                               &s->ahb[found], why, sizeof(why));
+                if (!wrapped) {
+                    /* DIAGNOSTIC RUNG: the panel is 1440x3200 and this window reports 2937.  If the
+                     * mapper validates the descriptor against what the queue ALLOCATED its buffers
+                     * at, this is the number it wants; if it still refuses, the descriptor is not
+                     * what is being rejected. */
+                    ahb_bridge_note("  diagnostic rung: 1440x3200 (the panel)");
+                    wrapped = ahb_bridge_wrap_desc(anb->handle, 1440, 3200, (uint32_t)anb->stride,
+                                                   (uint32_t)anb->format, &s->ahb[found], why,
+                                                   sizeof(why));
+                }
+            }
+            if (wrapped) {
                 LOGI("  buf[%d]: AHardwareBuffer %p usage=0x%llx -- offerable to a render server",
                      found, s->ahb[found], (unsigned long long)ahb_bridge_last_usage());
                 ahb_bridge_offer(s->ahb[found], (uint32_t)found, (uint32_t)width, (uint32_t)height,
@@ -966,12 +996,19 @@ static void *render_thread_func(void *arg)
 {
     struct consumer_state *s = arg;
     LOGI("render thread started");
+    LOGE("render thread entered");
+    ahb_bridge_note("render thread entered");
 
     while (s->running) {
         if (s->need_reconnect) {
             LOGI("reconnecting...");
             TracyCZoneN(zConnect, "do_connect", 1);
             int rc = do_connect(s);
+            ahb_bridge_note("do_connect rc=%d", rc);
+            if (rc >= 0)
+                /* The frames the render server draws, presented by this side.  Started here
+                 * because the window is up and the geometry is known. */
+                server_frames_start_async(s->window, (int)s->screen_w, (int)s->screen_h);
             TracyCZoneEnd(zConnect);
             if (rc < 0) {
                 usleep(500000);
@@ -1202,6 +1239,12 @@ Java_com_anland_consumer_Native_nativeStart(
     struct consumer_state *s = STATE(handle);
     if (!s)
         return;
+
+    /* E, not I: this app own I-level lines have never appeared in logcat on this device
+     * while its E-level lines do, so a probe into where the pipeline stops has to be at a
+     * level that is actually visible. */
+    LOGE("nativeStart: handle=%lld surface=%p", (long long)handle, (void *)surface);
+    ahb_bridge_note("nativeStart: handle=%lld surface=%p", (long long)handle, (void *)surface);
 
     if (!api_loaded) {
         if (anw_api_load(&api) < 0) {

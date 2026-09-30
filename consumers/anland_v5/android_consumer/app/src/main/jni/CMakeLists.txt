@@ -28,6 +28,7 @@ endif()
 
 add_library(anland_consumer SHARED
     ahb_bridge.c
+    server_frame.c
     native_consumer.c
     native_audio.c
     camera_service.c
