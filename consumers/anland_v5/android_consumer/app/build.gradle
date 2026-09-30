@@ -85,7 +85,10 @@ android {
         }
     }
 
-    ndkVersion "29.0.13113456"
+    // Local fork (gold/ahb-owned-buffers): 29.0.13113456 is not installed on this
+    // build host and nothing here needs anything 29 added; 28.2.13676358 is what the
+    // host has. Revert to 29 for an upstream-facing build.
+    ndkVersion "28.2.13676358"
 
     externalNativeBuild {
         cmake {
@@ -96,6 +99,12 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+        }
+        // Local fork: a debug build that can sit NEXT TO the installed consumer
+        // instead of replacing it -- a differently signed APK cannot upgrade one in
+        // place, and uninstalling costs the user the daemon pairing and settings.
+        debug {
+            applicationIdSuffix ".goldtest"
         }
     }
 

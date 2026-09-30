@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "ahb_bridge.h"
 #include "anw_hidden.h"
 #include "camera_service.h"
 #include "display_consumer.h"
@@ -59,6 +60,10 @@ struct consumer_state {
     int dmabuf_fds[MAX_COLLECT_BUFS];
     struct buf_info dmabuf_infos[MAX_COLLECT_BUFS];
     ANativeWindowBuffer *buf_anb[MAX_COLLECT_BUFS];
+    /* The SAME buffers, in the form a render server can take: one AHardwareBuffer per
+     * collected buffer, wrapped from the handle the queue handed us.  Held for the
+     * window's life and released in cleanup_dmabufs. */
+    void *ahb[MAX_COLLECT_BUFS];
 
     int screen_w;
     int screen_h;
@@ -188,6 +193,24 @@ static int collect_dmabufs(struct consumer_state *s)
         s->dmabuf_infos[found].offset = 0;
         LOGI("  buf[%d]: anb=%p fd=%d dup=%d %dx%d stride=%d",
              found, (void *)anb, fd, dup_fd, width, height, stride);
+
+        /* The same buffer again, as an AHardwareBuffer.  The fd above is what the
+         * container's compositor renders through; this is what a render server draws
+         * through, and it is the same memory -- which is the point, because the picture
+         * has to land in the buffer that gets scanned out and not in one the server
+         * allocated for itself. */
+        {
+            char why[192];
+            if (ahb_bridge_wrap(anb, &s->ahb[found], why, sizeof(why))) {
+                LOGI("  buf[%d]: AHardwareBuffer %p usage=0x%llx -- offerable to a render server",
+                     found, s->ahb[found], (unsigned long long)ahb_bridge_last_usage());
+                ahb_bridge_offer(s->ahb[found], (uint32_t)found, (uint32_t)width, (uint32_t)height,
+                                 (uint32_t)(stride * 4), PIXEL_FORMAT_RGBA_8888,
+                                 ahb_bridge_last_usage(), "dequeued SurfaceView buffer");
+            } else {
+                LOGE("  buf[%d]: not wrappable as an AHardwareBuffer: %s", found, why);
+            }
+        }
         found++;
     }
 
@@ -196,6 +219,8 @@ static int collect_dmabufs(struct consumer_state *s)
         for (int i = 0; i < found; i++) {
             close(s->dmabuf_fds[i]);
             s->dmabuf_fds[i] = -1;
+            ahb_bridge_release(s->ahb[i]);
+            s->ahb[i] = NULL;
         }
         return -1;
     }
@@ -212,6 +237,10 @@ static void cleanup_dmabufs(struct consumer_state *s)
             close(s->dmabuf_fds[i]);
             s->dmabuf_fds[i] = -1;
         }
+        /* Wrapped buffers are references to the queue's own allocations: holding one past
+         * the window would starve the queue, so they go back here. */
+        ahb_bridge_release(s->ahb[i]);
+        s->ahb[i] = NULL;
     }
     s->buf_count = 0;
 }

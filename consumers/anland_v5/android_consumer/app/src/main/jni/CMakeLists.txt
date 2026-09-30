@@ -27,6 +27,7 @@ if(ANLAND_TRACY)
 endif()
 
 add_library(anland_consumer SHARED
+    ahb_bridge.c
     native_consumer.c
     native_audio.c
     camera_service.c
@@ -44,6 +45,7 @@ target_link_options(anland_consumer PRIVATE -flto -fuse-ld=lld)
 
 target_link_libraries(anland_consumer
     android
+    nativewindow
     log
     dl
     aaudio
