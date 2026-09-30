@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -74,10 +75,15 @@ bool ahb_bridge_wrap(const ANativeWindowBuffer *anb, void **out_ahb, char *why, 
     d.stride = (uint32_t)anb->stride;
 
     // What the render server needs first: to sample the image and to draw into it.
+    // CPU read is asked for FIRST even though the render server only needs the two GPU
+    // bits: the host is the only party that can look at the pixels and say whether the
+    // server's drawing arrived, and that read needs the usage it is declaring.  The
+    // GPU-only pair stays as the fallback for a platform that refuses the extra bit.
     static const uint64_t usages[] = {
+        AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+            AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN,
         AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT,
         AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT,
-        AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
     };
     const int types[] = {AHB_HANDLE_TYPE_TRY_FIRST, AHB_HANDLE_TYPE_TRY_SECOND};
     int last_rc = 0;
@@ -138,6 +144,29 @@ static bool write_all(int fd, const void *p, size_t n)
     return true;
 }
 
+// Fills exactly n bytes or reports failure, so a short read from a receiver that died
+// halfway through an answer is never mistaken for a complete one.
+static bool read_all(int fd, void *p, size_t n)
+{
+    uint8_t *b = p;
+    while (n) {
+        ssize_t r = read(fd, b, n);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR)
+                continue;
+            return false;
+        }
+        b += r;
+        n -= (size_t)r;
+    }
+    return true;
+}
+
+static void hex4(const uint8_t v[4], char *out, size_t n)
+{
+    snprintf(out, n, "%02x%02x%02x%02x", v[0], v[1], v[2], v[3]);
+}
+
 bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height, uint32_t stride_bytes,
                       uint32_t format, uint64_t usage, const char *note)
 {
@@ -172,6 +201,53 @@ bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height
     }
     LOGI("offered buffer %u to the render server (%ux%u stride=%u format=0x%x usage=0x%llx)", index, width,
          height, stride_bytes, format, (unsigned long long)usage);
+
+    // The answer, and then this side's own look at the same pixels.  A receiver that never
+    // answers leaves the buffer offered and the window working: an offer is not a request
+    // and nothing here is fatal.
+    struct timeval tv;
+    tv.tv_sec = AHB_BRIDGE_ANSWER_MS / 1000;
+    tv.tv_usec = (AHB_BRIDGE_ANSWER_MS % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    struct ahb_ack ack;
+    memset(&ack, 0, sizeof(ack));
+    if (!read_all(fd, &ack, sizeof(ack)) || ack.magic != AHB_BRIDGE_MAGIC) {
+        LOGI("buffer %u: nothing answered on the bridge, so nothing is drawing into it", index);
+        return true;
+    }
+
+    struct ahb_seen seen;
+    memset(&seen, 0, sizeof(seen));
+    seen.magic = AHB_BRIDGE_MAGIC;
+    seen.version = 1;
+    seen.index = index;
+    snprintf(seen.note, sizeof(seen.note), "host readback after the receiver's ack");
+
+    // The only view of this buffer that belongs to this side.  AHardwareBuffer_Desc::stride
+    // is in PIXELS and every offset here is in bytes.
+    AHardwareBuffer_Desc d;
+    AHardwareBuffer_describe((const AHardwareBuffer *)ahb, &d);
+    void *p = NULL;
+    if (d.width && d.height &&
+        AHardwareBuffer_lock((const AHardwareBuffer *)ahb, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN, -1, NULL, &p) == 0 &&
+        p) {
+        const size_t byteStride = (size_t)d.stride * 4u;
+        const uint8_t *base = p;
+        memcpy(seen.observed, base, 4);
+        memcpy(seen.observed_corner,
+               base + (size_t)(d.height - 1) * byteStride + (size_t)(d.width - 1) * 4u, 4);
+        seen.locked = 1;
+        AHardwareBuffer_unlock((const AHardwareBuffer *)ahb, NULL);
+    }
+    (void)write_all(fd, &seen, sizeof(seen));
+
+    char ackS[16], firstS[16], cornerS[16];
+    hex4(ack.color, ackS, sizeof(ackS));
+    hex4(seen.observed, firstS, sizeof(firstS));
+    hex4(seen.observed_corner, cornerS, sizeof(cornerS));
+    LOGI("buffer %u: server imported=%u drawn=%u fence=%u colour=%s | host saw %s / %s%s", index, ack.imported,
+         ack.drawn, ack.fence_ok, ackS, firstS, cornerS, seen.locked ? "" : " (the lock was refused)");
     return true;
 }
 

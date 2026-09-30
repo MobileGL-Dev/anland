@@ -41,6 +41,37 @@ struct ahb_offer {
     char note[64];
 } __attribute__((packed));
 
+// The other two halves of the exchange, both fixed size and packed like the offer.
+//
+// The round trip is checked from the RECEIVER's side on purpose.  A server that imports an
+// image and clears a colour into it has proved that the platform took the buffer, not that
+// the bytes landed where the display host can see them -- and "landed where the host can
+// see them" is the entire question.  So the host reads both pixels back through its own
+// view of the same buffer and returns them, and the receiver decides.
+struct ahb_ack {  // receiver -> host: what the render server did with the buffer
+    uint32_t magic;
+    uint32_t version;
+    uint32_t index;
+    uint32_t imported;   // an EGLImage was created for it
+    uint32_t drawn;      // the colour below was cleared through that image
+    uint32_t fence_ok;   // the fence behind the clear reported a finished GPU
+    uint8_t color[4];    // the colour cleared, in memory order
+    char note[64];
+} __attribute__((packed));
+
+struct ahb_seen {  // host -> receiver: what the host's own view of the buffer holds now
+    uint32_t magic;
+    uint32_t version;
+    uint32_t index;
+    uint32_t locked;   // AHardwareBuffer_lock succeeded
+    uint8_t observed[4];
+    uint8_t observed_corner[4];
+    char note[64];
+} __attribute__((packed));
+
+// How long the host waits for the receiver's answer before deciding nothing is listening.
+#define AHB_BRIDGE_ANSWER_MS 4000
+
 // Where a listener may be: the same directory the daemon socket lives in.  An image bridge
 // that is not running is not an error -- it only means nothing here is offering to render.
 #define AHB_BRIDGE_SOCKET "/data/local/tmp/mobilegl_bridge.sock"
