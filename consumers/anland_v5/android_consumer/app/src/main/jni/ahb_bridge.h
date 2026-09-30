@@ -70,11 +70,20 @@ struct ahb_seen {  // host -> receiver: what the host's own view of the buffer h
 } __attribute__((packed));
 
 // How long the host waits for the receiver's answer before deciding nothing is listening.
-#define AHB_BRIDGE_ANSWER_MS 4000
+// How long the host waits for the receiver's answer before it decides nothing is listening.
+// It has to cover the receiver's first swap, not a round trip: the answer to a frame comes when
+// the render server has DRAWN it, and a compositor may take seconds to reach its first one.
+// Giving up early does not lose the frame - the next attempt re-offers it - but it makes the
+// two ends disagree about which frame is current, which is worth 26 seconds of patience to avoid.
+#define AHB_BRIDGE_ANSWER_MS 30000
 
 // Where a listener may be: the same directory the daemon socket lives in.  An image bridge
 // that is not running is not an error -- it only means nothing here is offering to render.
-#define AHB_BRIDGE_SOCKET "/data/local/tmp/mobilegl_bridge.sock"
+// AN ABSTRACT NAME, not a path.  Both ends are separate apps, and neither may create a socket
+// file in /data/local/tmp (its directory grants others traverse only) - so a path is a place
+// neither could listen.  An abstract name lives in the kernel namespace instead of the
+// filesystem, which is the same reason this project names its own endpoints @mgl-*.
+#define AHB_BRIDGE_SOCKET "@mobilegl-host-frame"
 
 // Wraps a buffer the display host has dequeued -- one that is about to be scanned out -- as
 // an AHardwareBuffer, so a process that is not this one can take it as an EGLImage.  False

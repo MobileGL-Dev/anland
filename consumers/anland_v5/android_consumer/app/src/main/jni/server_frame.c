@@ -20,6 +20,7 @@ struct pool {
     ASurfaceControl *sc;
     ARect rect;
     int count;
+    volatile bool stop;
 };
 
 static void present(struct pool *p, int i)
@@ -40,27 +41,27 @@ static void present(struct pool *p, int i)
 static void *frames_thread(void *arg)
 {
     struct pool *p = arg;
-    // A bridge that is not there yet is worth waiting for a little: the server is a separate
-    // process and may be starting.
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        bool any = false;
-        for (int i = 0; i < p->count; ++i) {
-            AHardwareBuffer_Desc d;
-            AHardwareBuffer_describe(p->buf[i], &d);
-            // The descriptor an import has to be told: what this buffer IS, not what a queue
-            // hands back.  No guessing, because this side allocated it.
-            if (!ahb_bridge_offer(p->buf[i], (uint32_t)i, d.width, d.height, d.stride * 4u, d.format, d.usage,
-                                  "self-allocated frame")) {
-                usleep(500000);
-                break;
-            }
-            any = true;
-            present(p, i);
-            ahb_bridge_note("frames: presented %d (%ux%u)", i, d.width, d.height);
-            usleep(33000);
+    // THE SERVER DRIVES, THIS SIDE ANSWERS.  The render server takes a frame when it needs one,
+    // draws into it, says so, and takes the next; this loop is the other half of that
+    // conversation and runs for as long as the window does.  A server that is not there yet is
+    // waited for rather than given up on: it is a separate app that has to come up, and until it
+    // does there is simply nothing to draw.
+    int i = 0;
+    while (!p->stop) {
+        AHardwareBuffer_Desc d;
+        AHardwareBuffer_describe(p->buf[i], &d);
+        // The descriptor an import has to be told: what this buffer IS, not what a queue hands
+        // back.  No guessing, because this side allocated it.
+        if (!ahb_bridge_offer(p->buf[i], (uint32_t)i, d.width, d.height, d.stride * 4u, d.format, d.usage,
+                              "host frame")) {
+            usleep(200000);
+            continue;
         }
-        if (any)
-            break;
+        // The server has drawn into it and answered; the frame is this side's to put on the
+        // glass.
+        present(p, i);
+        ahb_bridge_note("frames: presented %d (%ux%u)", i, d.width, d.height);
+        i = (i + 1) % p->count;
     }
     ahb_bridge_note("frames: thread done");
     return NULL;

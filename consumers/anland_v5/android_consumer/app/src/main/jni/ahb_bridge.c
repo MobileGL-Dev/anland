@@ -164,10 +164,20 @@ static int bridge_socket(void)
     struct sockaddr_un a;
     memset(&a, 0, sizeof(a));
     a.sun_family = AF_UNIX;
-    strncpy(a.sun_path, AHB_BRIDGE_SOCKET, sizeof(a.sun_path) - 1);
+    if (AHB_BRIDGE_SOCKET[0] == '@') {
+        /* The abstract namespace: sun_path[0] is NUL and the name follows it. */
+        a.sun_path[0] = 0;
+        strncpy(a.sun_path + 1, AHB_BRIDGE_SOCKET + 1, sizeof(a.sun_path) - 2);
+    } else {
+        strncpy(a.sun_path, AHB_BRIDGE_SOCKET, sizeof(a.sun_path) - 1);
+    }
     if (connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
         close(fd);
-        return s_sock;
+        /* -2, NOT -1: a server that is not up yet is the ordinary case here (it waits for this
+         * side for as long as its own accept timeout), so the next offer has to try again.
+         * Parking on -1 made the connection unrepeatable and the window blank. */
+        s_sock = -2;
+        return -1;
     }
     LOGI("connected to the image bridge at %s", AHB_BRIDGE_SOCKET);
     s_sock = fd;
