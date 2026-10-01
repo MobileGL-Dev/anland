@@ -10,8 +10,12 @@ int  connect_to_deamon(display_ctx **ctx, const char *socket_path);
 void disconnect(display_ctx *ctx);
 int  set_screen_info(display_ctx *ctx, uint32_t width, uint32_t height, uint32_t format, uint32_t refresh);
 int  push_dmabufs(display_ctx *ctx, const int *fds, const struct buf_info *infos, int count);
+/* Publish a Surface rendered by the embedded Android MobileGL worker. No
+ * dma-buf fd is sent; slot zero is only the existing frame pacing signal. */
+int  push_mobilegl_surface(display_ctx *ctx, uint32_t width, uint32_t height);
 int  select_dmabuf(display_ctx *ctx, int idx);
 int  refresh_done(display_ctx *ctx);
+int  consumer_is_fallback(display_ctx *ctx);
 int  push_input_event(display_ctx *ctx, const struct InputEvent *event);
 int  push_input_event_with_length(display_ctx *ctx, const struct InputEvent *event, void* payload, size_t size);
 int  set_fallback_callback(display_ctx *ctx, void (*on_fallback)(void *), void *userdata);

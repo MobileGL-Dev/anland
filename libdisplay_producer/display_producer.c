@@ -143,10 +143,33 @@ static int receive_dmabufs(display_ctx *ctx)
     int fd_count = 0;
 
     int n = recv_fds(ctx->data_fd, &dhdr, sizeof(dhdr), fds, MAX_BUFS, &fd_count);
-    if (n < (int)sizeof(struct data_msg) || fd_count < 1) {
+    if (n < (int)sizeof(struct data_msg)) {
         for (int i = 0; i < fd_count; i++)
             close(fds[i]);
         return -1;
+    }
+
+    if (dhdr.type == DATA_MSG_MOBILEGL_SURFACE) {
+        for (int i = 0; i < fd_count; i++)
+            close(fds[i]);
+        if (fd_count != 0 || dhdr.size != sizeof(struct screen_info))
+            return -1;
+        struct screen_info surface;
+        if (recv_all(ctx->data_fd, &surface, sizeof(surface)) < 0 ||
+            surface.format != ANLAND_FORMAT_MOBILEGL_SURFACE ||
+            surface.width == 0 || surface.height == 0)
+            return -1;
+        ctx->screen_w = surface.width;
+        ctx->screen_h = surface.height;
+        ctx->pixel_format = surface.format;
+        ctx->dmabuf_fds[0] = -1;
+        ctx->dmabuf_infos[0] = (struct buf_info){
+            .width = surface.width,
+            .height = surface.height,
+            .format = surface.format,
+        };
+        ctx->buf_count = 1;
+        return 0;
     }
 
     if (dhdr.type != DATA_MSG_BUFS_READY) {

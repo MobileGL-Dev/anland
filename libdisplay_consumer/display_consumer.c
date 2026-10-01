@@ -50,6 +50,7 @@ struct display_ctx {
     int              stored_fds[MAX_BUFS];
     struct buf_info  stored_infos[MAX_BUFS];
     int              stored_count;
+    bool             mobilegl_surface;
 
     void (*fallback_cb)(void *);
     void (*exit_fallback_cb)(void *);
@@ -200,6 +201,24 @@ static void enter_fallback(display_ctx *ctx);
 
 static int push_dmabufs_internal(display_ctx *ctx)
 {
+    if (ctx->mobilegl_surface) {
+        const struct data_msg hdr = {
+            .type = DATA_MSG_MOBILEGL_SURFACE,
+            .size = sizeof(struct screen_info),
+        };
+        const struct screen_info surface = {
+            .width = ctx->stored_infos[0].width,
+            .height = ctx->stored_infos[0].height,
+            .format = ANLAND_FORMAT_MOBILEGL_SURFACE,
+            .refresh = 0,
+        };
+        if (send_all(ctx->data_fd, &hdr, sizeof(hdr)) < 0 ||
+            send_all(ctx->data_fd, &surface, sizeof(surface)) < 0) {
+            enter_fallback(ctx);
+            return -1;
+        }
+        return 0;
+    }
     if (ctx->stored_count <= 0)
         return 0;
 
@@ -382,6 +401,7 @@ int set_screen_info(display_ctx *ctx, uint32_t width, uint32_t height, uint32_t 
 
 int push_dmabufs(display_ctx *ctx, const int *fds, const struct buf_info *infos, int count)
 {
+    ctx->mobilegl_surface = false;
     if (count > MAX_BUFS) count = MAX_BUFS;
     memcpy(ctx->stored_fds, fds, count * sizeof(int));
     memcpy(ctx->stored_infos, infos, count * sizeof(struct buf_info));
@@ -391,6 +411,25 @@ int push_dmabufs(display_ctx *ctx, const int *fds, const struct buf_info *infos,
         return 0;
 
     int ret = push_dmabufs_internal(ctx);
+    enter_fallback(ctx);
+    return ret;
+}
+
+int push_mobilegl_surface(display_ctx *ctx, uint32_t width, uint32_t height)
+{
+    if (!ctx || width == 0 || height == 0)
+        return -1;
+    ctx->mobilegl_surface = true;
+    ctx->stored_count = 1;
+    ctx->stored_fds[0] = -1;
+    ctx->stored_infos[0] = (struct buf_info){
+        .width = width,
+        .height = height,
+        .format = ANLAND_FORMAT_MOBILEGL_SURFACE,
+    };
+    if (ctx->fallback)
+        return 0;
+    const int ret = push_dmabufs_internal(ctx);
     enter_fallback(ctx);
     return ret;
 }
@@ -411,6 +450,14 @@ int select_dmabuf(display_ctx *ctx, int idx)
     eventfd_write(ctx->buf_ready_efd, val);
     ctx->buffer_pending = true;
     return 0;
+}
+
+int consumer_is_fallback(display_ctx *ctx)
+{
+    pthread_mutex_lock(&ctx->state_lock);
+    const int fallback = ctx->fallback;
+    pthread_mutex_unlock(&ctx->state_lock);
+    return fallback;
 }
 
 /* Wait for the producer to finish the frame, then return its render-done fence so

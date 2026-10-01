@@ -17,6 +17,10 @@
 #define DATA_MSG_OUTPUT_EVENT    103
 #define DATA_MSG_INPUT_EXTEND_FDS  104
 #define DATA_MSG_BUFS_READY      200
+/* Android owns the output Surface; there are no exported image fds. The
+ * payload is one screen_info and the normal frame/input channels remain live. */
+#define DATA_MSG_MOBILEGL_SURFACE 201
+#define ANLAND_FORMAT_MOBILEGL_SURFACE 0x4d474c53u
 
 #define MAX_BUFS 8
 
