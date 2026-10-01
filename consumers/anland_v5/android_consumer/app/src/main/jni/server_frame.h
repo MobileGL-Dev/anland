@@ -17,8 +17,10 @@
 // The Anland display path is untouched: this is a second, independent way for pixels to reach
 // the glass, and it is the one the render server can draw into.
 //
-// Idempotent, and a no-op if nothing is listening on the bridge: an absent render server is not
-// a failure of the display.
+// Idempotent for the same window at the same size.  A different window (a restarted session) or
+// size (a surface change, e.g. the keyboard opening) replaces the presenting pool: the old one
+// finishes its exchange, takes its layer off the window and frees itself.  A no-op if nothing is
+// listening on the bridge: an absent render server is not a failure of the display.
 void server_frames_start_async(ANativeWindow *window, int width, int height);
 
 #endif  // ANLAND_SERVER_FRAME_H
