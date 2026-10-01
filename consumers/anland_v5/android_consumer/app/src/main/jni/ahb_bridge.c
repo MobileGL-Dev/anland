@@ -6,6 +6,7 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -239,8 +240,8 @@ void ahb_bridge_note(const char *fmt, ...)
     fclose(f);
 }
 
-bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height, uint32_t stride_bytes,
-                      uint32_t format, uint64_t usage, const char *note)
+static bool offer_locked(void *ahb, uint32_t index, uint32_t width, uint32_t height, uint32_t stride_bytes,
+                         uint32_t format, uint64_t usage, const char *note)
 {
     if (!ahb)
         return false;
@@ -331,6 +332,23 @@ bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height
     const bool drew = ack.imported && ack.drawn;
     LOGI("buffer %u: server imported=%u drawn=%u fence=%u colour=%s | host saw %s / %s%s", index, ack.imported,
          ack.drawn, ack.fence_ok, ackS, firstS, cornerS, seen.locked ? "" : " (the lock was refused)");
+    return drew;
+}
+
+// ONE EXCHANGE AT A TIME ON THE ONE SOCKET.  An offer is handle + description out, answer in,
+// readback out: three steps the receiver reads in exactly that order.  Two threads offering at once
+// interleave them - measured when a surface change restarted the session while the frames thread
+// was mid-exchange: the receiver read one thread's description after the other's handle and the
+// waiting thread blocked in its read until the 30 s answer deadline, with the window frozen behind
+// it.  The whole exchange is therefore serialised here.
+static pthread_mutex_t s_offer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+bool ahb_bridge_offer(void *ahb, uint32_t index, uint32_t width, uint32_t height, uint32_t stride_bytes,
+                      uint32_t format, uint64_t usage, const char *note)
+{
+    pthread_mutex_lock(&s_offer_lock);
+    const bool drew = offer_locked(ahb, index, width, height, stride_bytes, format, usage, note);
+    pthread_mutex_unlock(&s_offer_lock);
     return drew;
 }
 

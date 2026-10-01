@@ -196,51 +196,13 @@ static int collect_dmabufs(struct consumer_state *s)
         LOGI("  buf[%d]: anb=%p fd=%d dup=%d %dx%d stride=%d",
              found, (void *)anb, fd, dup_fd, width, height, stride);
 
-        /* The same buffer again, as an AHardwareBuffer.  The fd above is what the
-         * container's compositor renders through; this is what a render server draws
-         * through, and it is the same memory -- which is the point, because the picture
-         * has to land in the buffer that gets scanned out and not in one the server
-         * allocated for itself. */
-        {
-            char why[192];
-            ahb_bridge_note("buf[%d]: anb=%dx%d stride=%d format=0x%x | set=%dx%d | fd=%d", found,
-                            anb->width, anb->height, anb->stride, anb->format,
-                            s->screen_w, s->screen_h,
-                            s->dmabuf_fds[found]);
-            bool wrapped = ahb_bridge_wrap(anb, &s->ahb[found], why, sizeof(why));
-            if (!wrapped) {
-                /* THE DESCRIPTOR AN IMPORT NEEDS IS THE GEOMETRY THE BUFFERS WERE ALLOCATED AT,
-                 * and that is the geometry this side handed to setBuffersGeometry (see do_connect),
-                 * not the size the surface reports back: a window that is not the full panel
-                 * reports its own height while the allocation keeps the one it was made with,
-                 * and the mapper answers BAD_VALUE (3) for the mismatch -- measured, and the
-                 * reason the same call succeeded while the window happened to be full height. */
-                ahb_bridge_note("  retrying with the geometry the queue was set to: %dx%d", s->screen_w,
-                                s->screen_h);
-                wrapped = ahb_bridge_wrap_desc(anb->handle, (uint32_t)s->screen_w, (uint32_t)s->screen_h,
-                                               (uint32_t)anb->stride, (uint32_t)anb->format,
-                                               &s->ahb[found], why, sizeof(why));
-                if (!wrapped) {
-                    /* DIAGNOSTIC RUNG: the panel is 1440x3200 and this window reports 2937.  If the
-                     * mapper validates the descriptor against what the queue ALLOCATED its buffers
-                     * at, this is the number it wants; if it still refuses, the descriptor is not
-                     * what is being rejected. */
-                    ahb_bridge_note("  diagnostic rung: 1440x3200 (the panel)");
-                    wrapped = ahb_bridge_wrap_desc(anb->handle, 1440, 3200, (uint32_t)anb->stride,
-                                                   (uint32_t)anb->format, &s->ahb[found], why,
-                                                   sizeof(why));
-                }
-            }
-            if (wrapped) {
-                LOGI("  buf[%d]: AHardwareBuffer %p usage=0x%llx -- offerable to a render server",
-                     found, s->ahb[found], (unsigned long long)ahb_bridge_last_usage());
-                ahb_bridge_offer(s->ahb[found], (uint32_t)found, (uint32_t)width, (uint32_t)height,
-                                 (uint32_t)(stride * 4), PIXEL_FORMAT_RGBA_8888,
-                                 ahb_bridge_last_usage(), "dequeued SurfaceView buffer");
-            } else {
-                LOGE("  buf[%d]: not wrappable as an AHardwareBuffer: %s", found, why);
-            }
-        }
+        /* NOT OFFERED TO THE RENDER SERVER.  The frames it draws are the pool server_frame.c
+         * allocates and presents; this queue's buffers are the container compositor's, through
+         * the fd above.  Offering them here as well put a second exchange on the one bridge
+         * socket, from this thread: once a server was listening, every reconnect (a surface
+         * change - the keyboard opening and closing - restarts the session) blocked this thread
+         * in the answer read for up to 30 s while the frames thread's exchange interleaved with
+         * it, and the window froze. */
         found++;
     }
 
