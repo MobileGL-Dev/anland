@@ -1,7 +1,12 @@
 cmake_minimum_required(VERSION 3.18)
 project(anland_consumer C CXX)
 
-set(LIBDISPLAY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..)
+add_library(anland_mobilegl SHARED mobilegl_worker.c)
+target_link_libraries(anland_mobilegl android dl)
+
+# Use the authoritative sources directly. Git checkouts on Windows may represent
+# the convenience links under consumers/anland_v5 as plain target-text files.
+set(LIBDISPLAY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..)
 
 # ---------- Tracy profiler (https://github.com/wolfpld/tracy) ----------
 # Client is fetched at configure time and linked in as a static C++ library;

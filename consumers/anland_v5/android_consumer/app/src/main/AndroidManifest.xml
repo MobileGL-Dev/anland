@@ -20,6 +20,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
+        <!-- The renderer belongs to this APK and UID. The private :mobilegl
+             process keeps MobileGL's process-global GL state out of the UI, and
+             hosts the single embedded server that every client connects to. -->
+        <service android:name=".MobileGLWorker" android:exported="false"
+            android:process=":mobilegl" />
+
         <!-- AccessibilityService: intercept hardware keys (Fn combos, etc.) -->
         <service
             android:name=".KeyInterceptor"

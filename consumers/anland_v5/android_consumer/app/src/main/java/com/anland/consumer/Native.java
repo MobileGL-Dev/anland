@@ -45,6 +45,8 @@ public final class Native {
     }
     public void start(Surface surface, Object clipboardTarget, Object activityTarget) { nativeStart(handle, surface, clipboardTarget, activityTarget); }
     public void stop() { nativeStop(handle); }
+    public void setMobileGL(boolean enabled) { nativeSetMobileGL(handle, enabled); }
+    static long surfaceIdentity(Surface surface) { return nativeSurfaceIdentity(surface); }
     /** Mark this instance focused: its camera client receives real frames, others blank. */
     public void setFocused(boolean focused) { nativeSetFocused(handle, focused); }
     public void setCustomResolution(int width, int height) { nativeSetCustomResolution(handle, width, height); }
@@ -81,6 +83,8 @@ public final class Native {
     private static native void nativeStart(long handle, Surface surface, Object clipboardTarget,
                                            Object activityTarget);
     private static native void nativeStop(long handle);
+    private static native void nativeSetMobileGL(long handle, boolean enabled);
+    private static native long nativeSurfaceIdentity(Surface surface);
     private static native void nativeSetCustomResolution(long handle, int width, int height);
     private static native void nativeSendTouch(long handle, int action, float x, float y, int pointerId);
     private static native void nativeSendTouchFrame(long handle);

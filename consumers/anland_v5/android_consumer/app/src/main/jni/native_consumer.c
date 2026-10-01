@@ -81,6 +81,8 @@ struct consumer_state {
     pthread_mutex_t cfg_lock;
     char cfg_socket_path[256];
     bool cfg_use_root;
+    bool cfg_mobilegl;
+    bool mobilegl;
     char cfg_helper_path[512];
     char cfg_bridge_path[512];
     int  cfg_custom_width;
@@ -724,6 +726,7 @@ static int do_connect(struct consumer_state *s)
     /* Snapshot the connection config for this attempt. */
     pthread_mutex_lock(&s->cfg_lock);
     bool use_root = s->cfg_use_root;
+    s->mobilegl = s->cfg_mobilegl;
     char sock_path[sizeof(s->cfg_socket_path)];
     char helper_path[sizeof(s->cfg_helper_path)];
     char bridge_path[sizeof(s->cfg_bridge_path)];
@@ -767,28 +770,30 @@ static int do_connect(struct consumer_state *s)
        s->screen_h = ANativeWindow_getHeight(win);
     }
 
-    /* dequeueBuffer needs the window connected to an API first (ANativeWindow_lock
-     * did this internally). Disconnect first so reconnect is idempotent. */
-    anw_api_disconnect(win, ANW_API_CPU);
-    if (anw_api_connect(win, ANW_API_CPU) != 0) {
-        LOGE("api_connect(CPU) failed");
-        return -1;
+    if (!s->mobilegl) {
+        /* dequeueBuffer needs the window connected to an API first (ANativeWindow_lock
+         * did this internally). Disconnect first so reconnect is idempotent. */
+        anw_api_disconnect(win, ANW_API_CPU);
+        if (anw_api_connect(win, ANW_API_CPU) != 0) {
+            LOGE("api_connect(CPU) failed");
+            return -1;
+        }
+
+        ANativeWindow_setBuffersGeometry(win, s->screen_w, s->screen_h,
+                                         AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+
+        int min_undequeued = 0;
+        api.query(win, ANATIVEWINDOW_QUERY_MIN_UNDEQUEUED_BUFFERS, &min_undequeued);
+        int total = min_undequeued + 2;
+        if (total > MAX_COLLECT_BUFS)
+            total = MAX_COLLECT_BUFS;
+
+        api.setBufferCount(win, total);
+
+        s->buf_count = total;
+        if (collect_dmabufs(s) < 0)
+            return -1;
     }
-
-    ANativeWindow_setBuffersGeometry(win, s->screen_w, s->screen_h,
-                                     AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
-
-    int min_undequeued = 0;
-    api.query(win, ANATIVEWINDOW_QUERY_MIN_UNDEQUEUED_BUFFERS, &min_undequeued);
-    int total = min_undequeued + 2;
-    if (total > MAX_COLLECT_BUFS)
-        total = MAX_COLLECT_BUFS;
-
-    api.setBufferCount(win, total);
-
-    s->buf_count = total;
-    if (collect_dmabufs(s) < 0)
-        return -1;
 
     LOGI("connecting to %s (%dx%d, %d bufs, root=%d)", sock,
          s->screen_w, s->screen_h, s->buf_count, use_root);
@@ -809,8 +814,12 @@ static int do_connect(struct consumer_state *s)
     }
 
     set_screen_info(s->ctx, s->screen_w, s->screen_h,
-                    PIXEL_FORMAT_RGBA_8888, s->refresh_mhz);
-    push_dmabufs(s->ctx, s->dmabuf_fds, s->dmabuf_infos, s->buf_count);
+                    s->mobilegl ? ANLAND_FORMAT_MOBILEGL_SURFACE : PIXEL_FORMAT_RGBA_8888,
+                    s->refresh_mhz);
+    if (s->mobilegl)
+        push_mobilegl_surface(s->ctx, s->screen_w, s->screen_h);
+    else
+        push_dmabufs(s->ctx, s->dmabuf_fds, s->dmabuf_infos, s->buf_count);
 
     /* Register the camera service only when it was initialised (i.e. the user
      * enabled it in settings and granted CAMERA). The service_info lives in this
@@ -950,6 +959,20 @@ static void *render_thread_func(void *arg)
             }
         }
 
+        if (s->mobilegl) {
+            /* EGL in the Anland-owned worker is the only Surface producer. The
+             * private display protocol still paces KWin and carries input/audio. */
+            if (select_dmabuf(s->ctx, 0) < 0 || consumer_is_fallback(s->ctx)) {
+                usleep(16000);
+                continue;
+            }
+            const int fence = refresh_done(s->ctx);
+            if (fence >= 0)
+                close(fence);
+            TracyCFrameMark;
+            continue;
+        }
+
         ANativeWindowBuffer *anb = NULL;
         int acqfence = -1;
         TracyCZoneN(zDequeue, "dequeueBuffer", 1);
@@ -1075,6 +1098,8 @@ Java_com_anland_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong h
     }
     cleanup_dmabufs(s);
     if (s->window) {
+        if (!s->mobilegl && api_loaded)
+            anw_api_disconnect(s->window, ANW_API_CPU);
         ANativeWindow_release(s->window);
         s->window = NULL;
     }
@@ -1152,6 +1177,31 @@ Java_com_anland_consumer_Native_nativeConfigure(
 }
 
 JNIEXPORT void JNICALL
+Java_com_anland_consumer_Native_nativeSetMobileGL(
+    JNIEnv *env, jclass clazz, jlong handle, jboolean enabled)
+{
+    (void)env; (void)clazz;
+    struct consumer_state *s = STATE(handle);
+    if (!s)
+        return;
+    pthread_mutex_lock(&s->cfg_lock);
+    s->cfg_mobilegl = (enabled == JNI_TRUE);
+    pthread_mutex_unlock(&s->cfg_lock);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_anland_consumer_Native_nativeSurfaceIdentity(JNIEnv *env, jclass clazz, jobject surface)
+{
+    (void)clazz;
+    ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
+    const jlong identity = (jlong)(intptr_t)window;
+    if (window) ANativeWindow_release(window);
+    /* Opaque identity within the private Anland Binder API; the worker never
+     * dereferences this client-process value. Its own Surface is parcelled. */
+    return identity;
+}
+
+JNIEXPORT void JNICALL
 Java_com_anland_consumer_Native_nativeSetCustomResolution(
     JNIEnv* env, jclass clazz, jlong handle, jint width, jint height)
 {
@@ -1174,7 +1224,7 @@ Java_com_anland_consumer_Native_nativeStart(
     if (!s)
         return;
 
-    if (!api_loaded) {
+    if (!s->cfg_mobilegl && !api_loaded) {
         if (anw_api_load(&api) < 0) {
             LOGE("failed to load ANativeWindow hidden API");
             return;
@@ -1199,6 +1249,8 @@ Java_com_anland_consumer_Native_nativeStart(
     cleanup_dmabufs(s);
 
     if (s->window) {
+        if (!s->mobilegl && api_loaded)
+            anw_api_disconnect(s->window, ANW_API_CPU);
         ANativeWindow_release(s->window);
         s->window = NULL;
     }
@@ -1291,6 +1343,8 @@ Java_com_anland_consumer_Native_nativeStop(
     cleanup_dmabufs(s);
 
     if (s->window) {
+        if (!s->mobilegl && api_loaded)
+            anw_api_disconnect(s->window, ANW_API_CPU);
         ANativeWindow_release(s->window);
         s->window = NULL;
     }

@@ -79,6 +79,7 @@ public class MainActivity extends Activity
     static final String EXTRA_WINDOW_NAME = "window_name";
     // This window's own native transport instance (its own consumer_state handle).
     private Native mNative;
+    private MobileGLConnection mobileglConnection;
     private final TouchLedger forwardedTouches = new TouchLedger(new TouchLedger.Sender() {
         @Override public void touch(int action, int id, float x, float y) {
             if (mNative != null)
@@ -330,6 +331,7 @@ public class MainActivity extends Activity
     // the helper, launched via su, uses to hand back the daemon fd.
     private void applyConnectionConfig() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        mNative.setMobileGL(mobileglEnabled());
         String sock = resolveSocketPath();
         boolean useRoot = prefs.getBoolean(KEY_USE_ROOT, true);
         String helperPath = getApplicationInfo().nativeLibraryDir + "/libfdhelper.so";
@@ -372,7 +374,23 @@ public class MainActivity extends Activity
             finish();
             return;
         }
-        mNative.start(surface, clipboard, this);
+        if (mobileglEnabled()) {
+            int width = customScreenWidth > 0 ? customScreenWidth : viewWidth;
+            int height = customScreenHeight > 0 ? customScreenHeight : viewHeight;
+            mobileglConnection.attach(surface, width, height, () -> {
+                if (mNative != null && surfaceReady && mResumed)
+                    mNative.start(surface, clipboard, this);
+            });
+        } else {
+            mobileglConnection.detach();
+            mNative.start(surface, clipboard, this);
+        }
+    }
+
+    private boolean mobileglEnabled() {
+        // A bundled build uses MobileGL by default. Explicit launch extra
+        // --ez mobilegl false retains the original Mesa/dma-buf renderer.
+        return getIntent().getBooleanExtra("mobilegl", BuildConfig.MOBILEGL_BUNDLED);
     }
 
     // True only when `path` exists and is a unix-domain socket. In root mode the
@@ -542,6 +560,13 @@ public class MainActivity extends Activity
 
         // Each window owns its own native pipeline.
         mNative = new Native();
+        mobileglConnection = new MobileGLConnection(this, (width, height) -> {
+            if (surfaceView == null || !surfaceReady) return;
+            if (width > 0 && height > 0)
+                surfaceView.getHolder().setFixedSize(width, height);
+            else
+                surfaceView.getHolder().setSizeFromLayout();
+        });
         setTaskDescription(new ActivityManager.TaskDescription(mWindowName));
 
         clipboard = new Clipboard(this, mNative);
@@ -1650,6 +1675,7 @@ public class MainActivity extends Activity
     @Override
     protected void onDestroy() {
         mResumed = false;
+        if (mobileglConnection != null) mobileglConnection.close();
         abandonMediaAudioFocus();
         if (immersive != null) immersive.stop();
         OplusRefreshRateLease.release(this);
@@ -1771,6 +1797,8 @@ public class MainActivity extends Activity
         updateDisplayRotation();
         ensurePointerPosition();
         surfaceReady = true;
+        if (mobileglEnabled())
+            mobileglConnection.reportGeometry(holder.getSurface(), width, height);
         // Same ordering guarantee as onResume: camera service settled before connect.
         applyCameraState();
         releaseScreenTouches();
@@ -1791,6 +1819,7 @@ public class MainActivity extends Activity
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         surfaceReady = false;
+        if (mobileglConnection != null) mobileglConnection.detach();
         if (immersive != null) immersive.stop();
         OplusRefreshRateLease.release(this);
         // Before the pipeline stops: a key this window forwarded and never saw

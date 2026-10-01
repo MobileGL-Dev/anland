@@ -2,6 +2,44 @@ plugins {
     id 'com.android.application'
 }
 
+// The Android split build is part of Anland's distribution. Supply its native
+// output directory with -PmobileglDist=... or MOBILEGL_DIST; no plugin APK or
+// external Android application is used at runtime.
+def mobileglDistPath = providers.gradleProperty('mobileglDist')
+        .orElse(providers.environmentVariable('MOBILEGL_DIST')).orNull
+def mobileglDist = mobileglDistPath == null ? null : file(mobileglDistPath)
+def mobileglLibs = layout.buildDirectory.dir('generated/mobilegl/jniLibs')
+def stageMobileGL = tasks.register('stageMobileGL') {
+    inputs.property('mobileglDistribution', mobileglDistPath ?: '')
+    if (mobileglDist != null) {
+        inputs.files(fileTree(mobileglDist) { include '*.so', 'arm64-v8a/*.so' })
+    }
+    outputs.dir(mobileglLibs)
+    doLast {
+        if (mobileglDist == null) {
+            // A no-source Sync task is skipped by Gradle. Clear explicitly when
+            // returning to an unbundled build so old binaries cannot survive.
+            project.delete(mobileglLibs.get().asFile)
+            project.mkdir(mobileglLibs.get().asFile)
+        } else {
+            // Only the split client library is needed: the renderer ABI it
+            // exports (EmbeddedServer.h) is served in-process by the :mobilegl
+            // service, so no separately exec'd supervisor binary is staged.
+            ['libMobileGL.so'].each { library ->
+                if (!new File(mobileglDist, library).isFile() &&
+                        !new File(mobileglDist, 'arm64-v8a/' + library).isFile())
+                    throw new GradleException("MOBILEGL_DIST is missing ${library}: ${mobileglDist}")
+            }
+            project.sync { spec ->
+                spec.from(mobileglDist)
+                spec.from(new File(mobileglDist, 'arm64-v8a'))
+                spec.include('*.so')
+                spec.into(mobileglLibs.get().dir('arm64-v8a').asFile)
+            }
+        }
+    }
+}
+
 // Run a git command at configuration time, returning its trimmed stdout or a
 // fallback when git isn't available (e.g. building from an exported tarball).
 def gitOutput = { List<String> cmd, String fallback ->
@@ -45,11 +83,12 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.anland.consumer"
+        applicationId providers.gradleProperty('mobileglApplicationId').getOrElse('com.anland.consumer')
         minSdk 30
         targetSdk 36
         versionCode gitCommitCount
         versionName "${gitTag}-${gitBuildId}${gitDirty}"
+        buildConfigField 'boolean', 'MOBILEGL_BUNDLED', mobileglDist != null ? 'true' : 'false'
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -85,7 +124,11 @@ android {
         }
     }
 
-    ndkVersion "29.0.13113456"
+    ndkVersion providers.gradleProperty('anlandNdkVersion')
+            .orElse(providers.environmentVariable('ANLAND_NDK_VERSION'))
+            .getOrElse('29.0.13113456')
+
+    sourceSets.main.jniLibs.srcDir(mobileglLibs)
 
     externalNativeBuild {
         cmake {
@@ -107,6 +150,8 @@ android {
         }
     }
 }
+
+tasks.named('preBuild').configure { dependsOn(stageMobileGL) }
 
 dependencies {
     // The pure-logic pieces (Gold status parsing, node selection, source
