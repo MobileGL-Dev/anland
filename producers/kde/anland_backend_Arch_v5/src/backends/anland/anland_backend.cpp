@@ -98,6 +98,7 @@ static void detachAudioBeforeConsumerRelease(void *)
 AnlandBackend::AnlandBackend(const QString &socketPath, QObject *parent)
     : OutputBackend(parent)
     , m_socketPath(socketPath.isEmpty() ? s_defaultSocketPath : socketPath)
+    , m_mobileGl(qEnvironmentVariableIntValue("ANLAND_MOBILEGL") == 1)
 {
 }
 
@@ -146,21 +147,45 @@ bool AnlandBackend::initialize()
         return false;
     }
 
-    // KWin dereferences renderBackend->drmDevice() during OpenGL compositor
-    // setup; without a real device it segfaults. Open one up front, then wrap
-    // it together with a surfaceless EGL display (anland imports the daemon's
-    // dmabufs directly rather than allocating through the DRM device) into a
-    // RenderDevice, mirroring how VirtualBackend owns its RenderDevice.
-    auto drmDevice = openRenderDevice();
-    if (!drmDevice) {
+    // Mesa imports the consumer's dma-bufs using a DRM render device and a
+    // surfaceless EGL display. The split MobileGL provider instead owns an
+    // Android window and has no guest-side DRM device to advertise.
+    auto drmDevice = m_mobileGl ? std::unique_ptr<DrmDevice>() : openRenderDevice();
+    if (!m_mobileGl && !drmDevice) {
         qCWarning(KWIN_ANLAND) << "no usable DRM render device; cannot bring up OpenGL compositing";
         return false;
     }
 
-    auto eglDisplay = EglDisplay::create(eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr), drmDevice.get());
+    auto eglDisplay = EglDisplay::create(m_mobileGl ? eglGetDisplay(EGL_DEFAULT_DISPLAY)
+                                                   : eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr),
+                                         drmDevice.get());
     if (!eglDisplay) {
-        qCWarning(KWIN_ANLAND) << "failed to create surfaceless EGL display";
+        qCWarning(KWIN_ANLAND) << "failed to create EGL display";
         return false;
+    }
+
+    if (m_mobileGl) {
+        // The Android app supplies its Surface to the split server. No Android
+        // pointer or gralloc handle crosses into this glibc process.
+        const EGLint attributes[] = {
+            EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+            EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+            EGL_NONE,
+        };
+        EGLConfig config = nullptr;
+        EGLint count = 0;
+        if (!eglChooseConfig(eglDisplay->handle(), attributes, &config, 1, &count) || count != 1) {
+            qCWarning(KWIN_ANLAND) << "MobileGL has no RGBA window config";
+            return false;
+        }
+        const EGLSurface surface = eglCreateWindowSurface(eglDisplay->handle(), config, EGLNativeWindowType{}, nullptr);
+        if (surface == EGL_NO_SURFACE) {
+            qCWarning(KWIN_ANLAND) << "MobileGL could not acquire the app Surface" << Qt::hex << eglGetError();
+            return false;
+        }
+        eglDisplay->setDefaultSurface(surface, config);
+        qCInfo(KWIN_ANLAND) << "MobileGL split server owns the output Surface";
     }
 
     m_renderDevice = std::make_unique<RenderDevice>(std::move(drmDevice), std::move(eglDisplay));

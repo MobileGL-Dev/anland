@@ -21,8 +21,8 @@
 #include <sys/types.h>
 
 extern "C" {
-#include "display_producer.h"
-#include "protocol.h"
+#include "libdisplay_producer/display_producer.h"
+#include "libdisplay_producer/protocol.h"
 }
 
 class QSocketNotifier;
@@ -62,10 +62,14 @@ public:
     {
         return m_display;
     }
+    bool usesMobileGl() const
+    {
+        return m_mobileGl;
+    }
     /**
-     * DRM render device backing GL/EGL. KWin dereferences this during OpenGL
-     * compositor setup (syncobj-timeline / dmabuf-feedback probing), so it must
-     * be non-null; AnlandEglBackend::drmDevice() forwards to it.
+     * DRM render device for the Mesa path. MobileGL renders through the
+     * Android server and returns null; kwin.patch keeps DRM feedback and
+     * syncobj probing disabled for that path.
      */
     DrmDevice *drmDevice() const;
     RenderDevice *renderDevice() const
@@ -127,6 +131,7 @@ private:
     static void fallbackTrampoline(void *data);
 
     QString m_socketPath;
+    const bool m_mobileGl;
     display_ctx *m_display = nullptr;
 
     std::unique_ptr<RenderDevice> m_renderDevice;

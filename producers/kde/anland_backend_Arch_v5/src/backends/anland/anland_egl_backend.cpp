@@ -70,6 +70,27 @@ void AnlandEglLayer::releaseBuffers()
 
 bool AnlandEglLayer::importBuffers(int count)
 {
+    if (m_backend->backend()->usesMobileGl()) {
+        buf_info info{};
+        if (count != 1 || get_dmabuf_info_at(m_display, 0, &info) < 0
+            || info.format != ANLAND_FORMAT_MOBILEGL_SURFACE) {
+            qCWarning(KWIN_ANLAND) << "consumer did not advertise a MobileGL Surface";
+            releaseBuffers();
+            return false;
+        }
+        releaseBuffers();
+        const QSize size(info.width, info.height);
+        if (!size.isValid()) {
+            return false;
+        }
+        if (size != m_output->modeSize()) {
+            m_output->resize(size);
+        }
+        m_fbos[0] = std::make_unique<GLFramebuffer>(0, size);
+        m_accumDamage[0] = Region::infinite();
+        m_bufCount = 1;
+        return true;
+    }
     if (count <= 0 || count > MAX_BUFS) {
         qCWarning(KWIN_ANLAND) << "invalid dmabuf count" << count;
         releaseBuffers();
@@ -176,8 +197,12 @@ std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
     }
 
     return OutputLayerBeginFrameInfo{
-        .renderTarget = RenderTarget(m_fbos[m_currentIndex].get()),
-        .repaint = m_accumDamage[m_currentIndex],
+        .renderTarget = m_backend->backend()->usesMobileGl()
+            ? RenderTarget(m_fbos[0].get(), m_output->transform().combine(OutputTransform::FlipY))
+            : RenderTarget(m_fbos[m_currentIndex].get()),
+        // Android's BufferQueue rotates its own buffers; until buffer age is
+        // exposed by the split client every swap needs a complete repaint.
+        .repaint = m_backend->backend()->usesMobileGl() ? Region::infinite() : m_accumDamage[m_currentIndex],
     };
 }
 
@@ -187,6 +212,14 @@ bool AnlandEglLayer::doEndFrame(const Region &renderedDeviceRegion, const Region
     Q_UNUSED(frame)
     if (m_bufCount == 0 || !m_backend->openglContext()) {
         return false;
+    }
+    if (m_backend->backend()->usesMobileGl()) {
+        const bool swapped = eglSwapBuffers(m_backend->eglDisplayObject()->handle(), m_backend->eglDisplayObject()->defaultSurface());
+        set_render_fence(m_display, -1);
+        if (!swapped) {
+            qCWarning(KWIN_ANLAND) << "MobileGL swap failed" << Qt::hex << eglGetError();
+        }
+        return swapped;
     }
     glFlush();
     for (int i = 0; i < m_bufCount; i++) {
@@ -252,7 +285,7 @@ DrmDevice *AnlandEglBackend::drmDevice() const
 
 bool AnlandEglBackend::initializeEgl()
 {
-    if (!initClientExtensions()) {
+    if (!m_backend->usesMobileGl() && !initClientExtensions()) {
         return false;
     }
     if (!m_backend->renderDevice()) {
