@@ -32,12 +32,14 @@
 #include "window.h"
 #include "workspace.h"
 
+#include <QDir>
 #include <QMimeData>
 #include <QScopeGuard>
 #include <QSocketNotifier>
 #include <QThreadPool>
 #include <QTimer>
 
+#include <gbm.h>
 #include <xf86drm.h>
 
 #include <errno.h>
@@ -53,12 +55,11 @@ static const QString s_defaultSocketPath = QStringLiteral("/tmp/display_daemon.s
 static const int s_reconnectIntervalMs = 200;
 
 /*
- * KWin needs a DRM render device for the GL/EGL path (syncobj timelines, dmabuf
- * feedback). The anland backend renders surfaceless and imports the daemon's
- * dmabufs, so any usable render node works. Prefer an explicit override
- * ($ANLAND_DRM_DEVICE), then the first enumerated render node (as the virtual
- * backend does), then the standard render node — which on the kgsl/turnip stack
- * is the msm node exposed at /dev/dri/renderD128.
+ * Mesa mode: KWin needs a DRM render device for the GL/EGL path (syncobj
+ * timelines, dmabuf feedback). The anland backend renders surfaceless and
+ * imports the daemon's dmabufs, so any usable render node works. Prefer an
+ * explicit override ($ANLAND_DRM_DEVICE), then the first enumerated render node
+ * (as the virtual backend does), then the standard render node.
  */
 static std::unique_ptr<DrmDevice> openRenderDevice()
 {
@@ -88,6 +89,47 @@ static std::unique_ptr<DrmDevice> openRenderDevice()
     }
 
     return DrmDevice::open(QStringLiteral("/dev/dri/renderD128"));
+}
+
+/*
+ * MobileGL mode: the DrmDevice is only an identity. With GBM_BACKEND=mobilegl
+ * libgbm loads MobileGL's backend, whose buffers are images the MobileGL server
+ * allocates; it never issues an ioctl on the descriptor, and KWin's DrmDevice
+ * queries nothing from it in this mode (kwin.patch). KWin still needs the device
+ * for linux-dmabuf (the feedback's main device) and its GBM allocator, so any
+ * character device that opens will do: $MOBILEGL_GBM_NODE, else the first render
+ * node that opens, else /dev/null - present everywhere, and as good an identity
+ * as any when the container exposes no DRM node at all. A device whose GBM
+ * backend is not MobileGL's (GBM_BACKEND unset) is refused: its buffers would be
+ * ones the MobileGL EGL cannot import.
+ */
+static std::unique_ptr<DrmDevice> openMobileGlDevice()
+{
+    QStringList candidates;
+    const QString configured = qEnvironmentVariable("MOBILEGL_GBM_NODE");
+    if (!configured.isEmpty()) {
+        candidates << configured;
+    }
+    const QDir dri(QStringLiteral("/dev/dri"));
+    for (const QString &name : dri.entryList({QStringLiteral("renderD*")}, QDir::System, QDir::Name)) {
+        candidates << dri.filePath(name);
+    }
+    candidates << QStringLiteral("/dev/null");
+
+    for (const QString &path : std::as_const(candidates)) {
+        auto dev = DrmDevice::open(path);
+        if (!dev) {
+            continue;
+        }
+        const char *backend = gbm_device_get_backend_name(dev->gbmDevice());
+        if (qstrcmp(backend, "mobilegl") != 0) {
+            qCWarning(KWIN_ANLAND) << "GBM backend for" << path << "is" << backend << "not mobilegl (is GBM_BACKEND=mobilegl set?)";
+            return nullptr;
+        }
+        qCInfo(KWIN_ANLAND) << "MobileGL GBM device on identity node" << path;
+        return dev;
+    }
+    return nullptr;
 }
 
 static void detachAudioBeforeConsumerRelease(void *)
@@ -149,11 +191,17 @@ bool AnlandBackend::initialize()
 
     // Mesa imports the consumer's dma-bufs using a DRM render device and a
     // surfaceless EGL display. The split MobileGL provider instead owns an
-    // Android window and has no guest-side DRM device to advertise.
-    auto drmDevice = m_mobileGl ? std::unique_ptr<DrmDevice>() : openRenderDevice();
-    if (!m_mobileGl && !drmDevice) {
-        qCWarning(KWIN_ANLAND) << "no usable DRM render device; cannot bring up OpenGL compositing";
-        return false;
+    // Android window; its DrmDevice is only the identity of MobileGL's GBM
+    // device (openMobileGlDevice), which linux-dmabuf and KWin's own buffer
+    // allocations need. Without one, compositing still works and clients use
+    // wl_shm.
+    auto drmDevice = m_mobileGl ? openMobileGlDevice() : openRenderDevice();
+    if (!drmDevice) {
+        if (!m_mobileGl) {
+            qCWarning(KWIN_ANLAND) << "no usable DRM render device; cannot bring up OpenGL compositing";
+            return false;
+        }
+        qCWarning(KWIN_ANLAND) << "no MobileGL GBM device; linux-dmabuf stays off";
     }
 
     auto eglDisplay = EglDisplay::create(m_mobileGl ? eglGetDisplay(EGL_DEFAULT_DISPLAY)

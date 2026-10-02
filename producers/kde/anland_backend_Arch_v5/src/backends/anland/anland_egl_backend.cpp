@@ -246,6 +246,12 @@ bool AnlandEglLayer::doEndFrame(const Region &renderedDeviceRegion, const Region
 
 DrmDevice *AnlandEglLayer::scanoutDevice() const
 {
+    // The MobileGL output is an EGL window surface on the server's Android
+    // Surface: no client buffer can be put on it directly, so clients get no
+    // scanout tranche towards the (identity-only) DRM device.
+    if (m_backend->backend()->usesMobileGl()) {
+        return nullptr;
+    }
     return m_backend->drmDevice();
 }
 

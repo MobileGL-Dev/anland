@@ -26,6 +26,42 @@ index 616ee65..518d7d1 100644
      }
      if (glPlatform->driverVersion().isValid()) {
          gpuInformation[QStringLiteral("version")] = glPlatform->driverVersion().toString();
+diff --git a/src/core/drmdevice.cpp b/src/core/drmdevice.cpp
+index 81b1b09..4d24a51 100644
+--- a/src/core/drmdevice.cpp
++++ b/src/core/drmdevice.cpp
+@@ -19,8 +19,20 @@
+ namespace KWin
+ {
+ 
++// anland's MobileGL session opens a node only as the identity of its GBM device, whose buffers
++// come from the MobileGL server rather than from that node's driver (the GBM backend never
++// touches the descriptor). Nothing is queried from such a node, so no driver quirk, bus identity
++// or syncobj support of an unrelated device is attributed to the buffers.
++static bool isIdentityOnlyNode()
++{
++    return qEnvironmentVariableIntValue("ANLAND_MOBILEGL") == 1;
++}
++
+ static QByteArray getDriverName(const FileDescriptor &fd)
+ {
++    if (isIdentityOnlyNode()) {
++        return QByteArray();
++    }
+     auto version = drmGetVersion(fd.get());
+     if (version) {
+         auto ret = QByteArray(version->name, version->name_len);
+@@ -47,6 +59,10 @@ DrmDevice::DrmDevice(const QString &path, dev_t id, FileDescriptor &&fd, gbm_dev
+     , m_isVmwgfx(m_driverName == "vmwgfx")
+     , m_isVirtualMachine(m_driverName == "virtio_gpu" || m_driverName == "qxl" || m_driverName == "vmwgfx" || m_driverName == "vboxvideo")
+ {
++    if (isIdentityOnlyNode()) {
++        m_supportsSyncObjTimelines = false;
++        return;
++    }
+     drmGetDevice2(m_fd.get(), 0, &m_libdrmDevice);
+     uint64_t value = 0;
+     m_supportsSyncObjTimelines = drmGetCap(m_fd.get(), DRM_CAP_SYNCOBJ_TIMELINE, &value) == 0 && value != 0;
 diff --git a/src/core/gpumanager.cpp b/src/core/gpumanager.cpp
 index e6f5ac6..88fe4a0 100644
 --- a/src/core/gpumanager.cpp
@@ -177,20 +213,21 @@ index 70432da..cce4cb4 100644
          a.setSession(KWin::Session::create());
          if (!a.session()) {
 diff --git a/src/opengl/eglbackend.cpp b/src/opengl/eglbackend.cpp
-index 75c7e73..3afd636 100644
+index 75c7e73..0b21d74 100644
 --- a/src/opengl/eglbackend.cpp
 +++ b/src/opengl/eglbackend.cpp
-@@ -122,7 +122,15 @@ void EglBackend::initWayland()
+@@ -122,7 +122,16 @@ void EglBackend::initWayland()
          return;
      }
      DrmDevice *scanoutDevice = drmDevice();
 -    Q_ASSERT(scanoutDevice);
-+    if (!scanoutDevice) {
-+        // A split provider cannot import client dma-bufs or DRM timelines, so
-+        // linux-dmabuf is not created at all: linuxDmabuf() would advertise the
-+        // global, and with no tranches its format table stays null, which a
-+        // client asking for default feedback (Chrome) dereferenced in KWin.
-+        // Clients fall back to wl_shm.
++    if (!scanoutDevice || m_renderDevice->eglDisplay()->allSupportedDrmFormats().isEmpty()) {
++        // anland's MobileGL session normally has a device (MobileGL's GBM backend
++        // on an identity node) and imports dma-bufs through MobileGL's EGL. When
++        // either is missing, linux-dmabuf is not created at all: linuxDmabuf()
++        // would advertise the global, and with no tranches its format table
++        // stays null, which a client asking for default feedback (Chrome)
++        // dereferenced in KWin. Clients fall back to wl_shm.
 +        waylandServer()->setRenderBackend(this);
 +        return;
 +    }
@@ -350,10 +387,10 @@ index fe09957..00b56cc 100644
          const auto linuxVersion = linuxKernelVersion();
          if (linuxVersion.majorVersion() < 6 && linuxVersion.minorVersion() < 6) {
 diff --git a/src/xwayland/xwaylandlauncher.cpp b/src/xwayland/xwaylandlauncher.cpp
-index 7ebdecf..a4fc144 100644
+index 7ebdecf..2e39d15 100644
 --- a/src/xwayland/xwaylandlauncher.cpp
 +++ b/src/xwayland/xwaylandlauncher.cpp
-@@ -177,6 +177,21 @@ bool XwaylandLauncher::start()
+@@ -177,6 +177,24 @@ bool XwaylandLauncher::start()
      arguments << QStringLiteral("-rootless");
  
      QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -368,6 +405,9 @@ index 7ebdecf..a4fc144 100644
 +        env.remove("MOBILEGL_IPC_CONTROL");
 +        env.remove("MOBILEGL_IPC_SURFACE");
 +        env.remove("MESA_LOADER_DRIVER_OVERRIDE");
++        // GBM_BACKEND names MobileGL's GBM backend, whose buffers only
++        // MobileGL's EGL can draw with; the software stack picks its own.
++        env.remove("GBM_BACKEND");
 +        env.remove("ANLAND_MOBILEGL");
 +        env.insert("LIBGL_ALWAYS_SOFTWARE", QStringLiteral("1"));
 +        env.insert("GALLIUM_DRIVER", QStringLiteral("llvmpipe"));
@@ -376,14 +416,16 @@ index 7ebdecf..a4fc144 100644
      env.insert("WAYLAND_SOCKET", QByteArray::number(waylandSocket.get()));
      fdsToPass << waylandSocket.get();
 diff --git a/src/plugins/screencast/screencaststream.cpp b/src/plugins/screencast/screencaststream.cpp
+index cb51ca2..65b8e33 100644
 --- a/src/plugins/screencast/screencaststream.cpp
 +++ b/src/plugins/screencast/screencaststream.cpp
-@@ -880,7 +880,8 @@
+@@ -880,7 +880,9 @@ void ScreenCastStream::setCursorMode(ScreencastV1Interface::CursorMode mode)
  std::optional<ScreenCastDmaBufTextureParams> ScreenCastStream::testCreateDmaBuf(const QSize &size, quint32 format, const ModifierList &modifiers)
  {
      EglBackend *backend = qobject_cast<EglBackend *>(Compositor::self()->backend());
 -    if (!backend) {
-+    // anland: no DRM device on this backend, so no dma-buf either; the stream uses memfd.
++    // anland: without a DRM device (no GBM device could be created) there is no
++    // dma-buf either, and the stream uses memfd. With one, the probe below decides.
 +    if (!backend || !backend->drmDevice()) {
          return std::nullopt;
      }

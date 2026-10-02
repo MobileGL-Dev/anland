@@ -42,7 +42,26 @@ if [ -z "${MOBILEGL_BACKEND_TYPE:-}" ] && [ -r "$MOBILEGL_BACKEND_FILE" ]; then
 fi
 export MOBILEGL_BACKEND_TYPE="${MOBILEGL_BACKEND_TYPE:-DirectGLES}"
 export KWIN_DISABLE_VULKAN=1 KWIN_NO_TIMER_QUERY=1 KWIN_PERSISTENT_VBO=0
+# KWin now has a DRM device (below), and with one it turns wl_shm buffers into udmabufs and
+# imports them through EGL; MobileGL's EGL only imports images its server allocated, so that
+# import would fail per buffer. Keep it off.
 export KWIN_DISABLE_UDMABUF_IMPORT=1
+# GBM: libgbm loads /usr/lib/gbm/mobilegl_gbm.so (installed by anland-build-client.sh), whose
+# buffers are MobileGL server images. Its device node is only an identity - the backend never
+# issues an ioctl on it - so the first render node this user can open is borrowed, else
+# /dev/null. MobileGL's EGL device reports the same node, so KWin's dma-buf feedback names one
+# device throughout.
+if [ -z "${MOBILEGL_GBM_NODE:-}" ]; then
+    MOBILEGL_GBM_NODE=/dev/null
+    for node in /dev/dri/renderD*; do
+        if [ -r "$node" ] && [ -w "$node" ]; then
+            MOBILEGL_GBM_NODE="$node"
+            break
+        fi
+    done
+fi
+export GBM_BACKEND=mobilegl MOBILEGL_GBM_NODE
+export MOBILEGL_DEVICE_DRM_NODE="${MOBILEGL_DEVICE_DRM_NODE:-$MOBILEGL_GBM_NODE}"
 unset MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER FD_FORCE_KGSL ANLAND_DRM_DEVICE
 unset XWAYLAND_GBM_DEVICE ANLAND_SKIP_IMPLICIT_SYNC_WAIT
 
@@ -123,11 +142,14 @@ Environment="KWIN_DISABLE_VULKAN=1"
 Environment="KWIN_NO_TIMER_QUERY=1"
 Environment="KWIN_PERSISTENT_VBO=0"
 Environment="KWIN_DISABLE_UDMABUF_IMPORT=1"
+Environment="GBM_BACKEND=mobilegl"
+Environment="MOBILEGL_GBM_NODE=$MOBILEGL_GBM_NODE"
+Environment="MOBILEGL_DEVICE_DRM_NODE=$MOBILEGL_DEVICE_DRM_NODE"
 Environment="QT_LOGGING_RULES=kwin_*.info=true"
 EOF
         systemctl --user daemon-reload
         install_chrome_launcher
-        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME MOBILEGL_TRANSPORT MOBILEGL_BACKEND_TYPE MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM
+        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME MOBILEGL_TRANSPORT MOBILEGL_BACKEND_TYPE MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM GBM_BACKEND MOBILEGL_GBM_NODE MOBILEGL_DEVICE_DRM_NODE
         exec startplasma-wayland "$@"
         ;;
     *)
