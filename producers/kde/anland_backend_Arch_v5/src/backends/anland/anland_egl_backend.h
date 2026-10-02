@@ -8,6 +8,7 @@
 
 #include "core/outputlayer.h"
 #include "opengl/eglbackend.h"
+#include "utils/damagejournal.h"
 
 #include <array>
 #include <memory>
@@ -39,6 +40,7 @@ public:
     ~AnlandEglLayer() override;
 
     std::optional<OutputLayerBeginFrameInfo> doBeginFrame() override;
+    Region adjustRenderRegion(const Region &region) override;
     bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
 
     DrmDevice *scanoutDevice() const override;
@@ -53,6 +55,12 @@ private:
     // MobileGL: the server window's size, as eglQuerySurface reports it, applied to the output
     // between frames.
     void followMobileGlSurfaceSize();
+    // MobileGL: what the frame must repaint - the damage of the frames since the buffer it draws
+    // into was last shown (EGL_EXT_buffer_age), or everything when that is not known.
+    Region mobileGlRepaint();
+    // MobileGL: eglSwapBuffers, with what the frame painted as its damage when the display takes it;
+    // the journal records what changed.
+    bool mobileGlSwap(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion);
 
     AnlandEglBackend *const m_backend;
     AnlandOutput *m_output;
@@ -64,6 +72,9 @@ private:
     std::array<std::unique_ptr<GLFramebuffer>, MAX_BUFS> m_fbos;
     std::array<Region, MAX_BUFS> m_accumDamage;
     QTimer *m_surfaceSizePoll = nullptr;
+    // MobileGL: the damage of the last frames swapped into the server-owned window, newest first;
+    // cleared whenever the window's buffers may have been replaced (resize, transform, re-import).
+    DamageJournal m_damageJournal;
 };
 
 class AnlandEglBackend : public EglBackend

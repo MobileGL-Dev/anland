@@ -83,7 +83,94 @@ void AnlandEglLayer::followMobileGlSurfaceSize()
     // Between frames, so the next one is laid out for the new output and drawn into the whole buffer.
     m_output->resize(size);
     m_fbos[0] = std::make_unique<GLFramebuffer>(0, size);
+    m_damageJournal.clear();
     addDeviceRepaint(Region::infinite());
+}
+
+Region AnlandEglLayer::mobileGlRepaint()
+{
+    EglDisplay *eglDisplay = m_backend->eglDisplayObject();
+    if (!eglDisplay->supportsBufferAge()) {
+        return Region::infinite();
+    }
+    // Asked before anything is drawn: the server answers for the buffer this frame's draws land in
+    // (on Espryt the driver's, on Magma the swapchain image's), 0 when it does not know.
+    EGLint age = 0;
+    if (!eglQuerySurface(eglDisplay->handle(), eglDisplay->defaultSurface(), EGL_BUFFER_AGE_EXT, &age)) {
+        return Region::infinite();
+    }
+    return m_damageJournal.accumulate(age, Region::infinite());
+}
+
+Region AnlandEglLayer::adjustRenderRegion(const Region &region)
+{
+    if (!m_backend->backend()->usesMobileGl() || m_bufCount == 0) {
+        return region;
+    }
+    EglDisplay *eglDisplay = m_backend->eglDisplayObject();
+    static const bool partialUpdate = eglDisplay->hasExtension(QByteArrayLiteral("EGL_KHR_partial_update"));
+    if (!partialUpdate || !eglDisplay->supportsBufferAge()) {
+        return region;
+    }
+    // EGL_KHR_partial_update: the buffer keeps its content only outside the region declared here,
+    // so the region must be what this frame paints - every pixel of it. Drivers honour a damage
+    // region by its bounding box (pixels inside it that are not drawn come out undefined), so the
+    // frame paints, and declares, one rectangle: the bounds of what it was going to paint.
+    const QSize size = m_fbos[0] ? m_fbos[0]->size() : m_output->modeSize();
+    const Rect whole(0, 0, size.width(), size.height());
+    Region paint = region & whole;
+    if (!paint.isEmpty()) {
+        paint = Region(paint.boundingRect());
+    }
+    QList<EGLint> rects;
+    if (paint != Region(whole)) {
+        // KWin's device rectangles run from the top-left; EGL's from the bottom-left.
+        for (const Rect &rect : paint.rects()) {
+            rects << rect.x() << size.height() - rect.y() - rect.height() << rect.width() << rect.height();
+        }
+    }
+    if (paint.isEmpty()) {
+        // EGL cannot declare "nothing" (no rectangles is the whole surface): declare one pixel and
+        // have it painted.
+        paint = Region(Rect(0, 0, 1, 1));
+        rects = {0, size.height() - 1, 1, 1};
+    }
+    eglSetDamageRegionKHR(eglDisplay->handle(), eglDisplay->defaultSurface(), rects.isEmpty() ? nullptr : rects.data(),
+                          rects.size() / 4);
+    return paint;
+}
+
+bool AnlandEglLayer::mobileGlSwap(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion)
+{
+    EglDisplay *eglDisplay = m_backend->eglDisplayObject();
+    const EGLDisplay display = eglDisplay->handle();
+    const EGLSurface surface = eglDisplay->defaultSurface();
+    const QSize size = m_fbos[0] ? m_fbos[0]->size() : m_output->modeSize();
+    // Everything the frame painted, not only what changed: a driver may write back no more of the
+    // buffer than the swap damage, and the repairs buffer age asked for are paint too.
+    const Region damage = (renderedDeviceRegion | damagedDeviceRegion) & Rect(0, 0, size.width(), size.height());
+    static const bool withDamage = eglDisplay->hasExtension(QByteArrayLiteral("EGL_KHR_swap_buffers_with_damage"));
+    bool swapped;
+    // An empty damage has no EGL spelling (no rectangles means the whole surface): a plain swap.
+    if (withDamage && !damage.isEmpty() && damage != Region(Rect(0, 0, size.width(), size.height()))) {
+        // KWin's device rectangles run from the top-left; EGL's from the bottom-left.
+        QList<EGLint> rects;
+        const auto damageRects = damage.rects();
+        rects.reserve(damageRects.size() * 4);
+        for (const Rect &rect : damageRects) {
+            rects << rect.x() << size.height() - rect.y() - rect.height() << rect.width() << rect.height();
+        }
+        swapped = eglSwapBuffersWithDamageKHR(display, surface, rects.data(), rects.size() / 4);
+    } else {
+        swapped = eglSwapBuffers(display, surface);
+    }
+    if (swapped) {
+        m_damageJournal.add(damagedDeviceRegion);
+    } else {
+        // Which buffer holds what is no longer known.
+        m_damageJournal.clear();
+    }
+    return swapped;
 }
 
 AnlandEglLayer::~AnlandEglLayer()
@@ -102,6 +189,7 @@ void AnlandEglLayer::releaseBuffers()
         m_textures[i].reset();
         m_accumDamage[i] = Region();
 }
+    m_damageJournal.clear();
     m_bufCount = 0;
 }
 
@@ -214,6 +302,7 @@ void AnlandEglLayer::onOutputTransformChanged()
         }
         m_accumDamage[i] = Region::infinite();
     }
+    m_damageJournal.clear();
     addDeviceRepaint(Region::infinite());
 }
 
@@ -237,6 +326,7 @@ std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
         // The frame's target is always the output's mode, which the scene is laid out for: a
         // viewport of another size draws the scene shifted, or leaves rows of the buffer unwritten.
         m_fbos[0] = std::make_unique<GLFramebuffer>(0, m_output->modeSize());
+        m_damageJournal.clear();
     }
 
     return OutputLayerBeginFrameInfo{
@@ -246,21 +336,21 @@ std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
             // where the consumer's blit applies its own transform.
             ? RenderTarget(m_fbos[0].get(), m_output->transform())
             : RenderTarget(m_fbos[m_currentIndex].get()),
-        // Android's BufferQueue rotates its own buffers; until buffer age is
-        // exposed by the split client every swap needs a complete repaint.
-        .repaint = m_backend->backend()->usesMobileGl() ? Region::infinite() : m_accumDamage[m_currentIndex],
+        // Android's BufferQueue (Espryt) or the swapchain (Magma) rotates the server window's
+        // buffers; the buffer age MobileGL reports says which of the journal's frames this one
+        // has missed.
+        .repaint = m_backend->backend()->usesMobileGl() ? mobileGlRepaint() : m_accumDamage[m_currentIndex],
     };
 }
 
 bool AnlandEglLayer::doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame)
 {
-    Q_UNUSED(renderedDeviceRegion)
     Q_UNUSED(frame)
     if (m_bufCount == 0 || !m_backend->openglContext()) {
         return false;
     }
     if (m_backend->backend()->usesMobileGl()) {
-        const bool swapped = eglSwapBuffers(m_backend->eglDisplayObject()->handle(), m_backend->eglDisplayObject()->defaultSurface());
+        const bool swapped = mobileGlSwap(renderedDeviceRegion, damagedDeviceRegion);
         set_render_fence(m_display, -1);
         if (!swapped) {
             qCWarning(KWIN_ANLAND) << "MobileGL swap failed" << Qt::hex << eglGetError();

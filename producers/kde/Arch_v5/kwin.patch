@@ -8,10 +8,9 @@ index e94a1c6..82d377c 100644
  add_subdirectory(fakeinput)
  add_subdirectory(libinput)
 diff --git a/src/compositor.cpp b/src/compositor.cpp
-index 616ee65..518d7d1 100644
 --- a/src/compositor.cpp
 +++ b/src/compositor.cpp
-@@ -131,9 +131,11 @@ static QVariantHash collectCrashInformation(const EglBackend *backend)
+@@ -131,9 +131,11 @@
      QVariantHash gpuInformation;
      gpuInformation[QStringLiteral("api_type")] = QStringLiteral("OpenGL");
      gpuInformation[QStringLiteral("name")] = QString::fromUtf8(glPlatform->glRendererString());
@@ -26,6 +25,15 @@ index 616ee65..518d7d1 100644
      }
      if (glPlatform->driverVersion().isValid()) {
          gpuInformation[QStringLiteral("version")] = glPlatform->driverVersion().toString();
+@@ -431,7 +433,7 @@
+         return false;
+     }
+     auto &[renderTarget, repaint] = beginInfo.value();
+-    const Region bufferDamage = surfaceDamage.united(repaint).intersected(renderTarget.transformedRect());
++    const Region bufferDamage = view->layer()->adjustRenderRegion(surfaceDamage.united(repaint).intersected(renderTarget.transformedRect()));
+     view->paint(renderTarget, view->renderOffset(), bufferDamage);
+     return view->layer()->endFrame(bufferDamage, surfaceDamage, frame.get());
+ }
 diff --git a/src/core/drmdevice.cpp b/src/core/drmdevice.cpp
 index 81b1b09..4d24a51 100644
 --- a/src/core/drmdevice.cpp
@@ -76,6 +84,38 @@ index e6f5ac6..88fe4a0 100644
      if (m_explicitRenderNodes.has_value()) {
          for (const QString &path : *m_explicitRenderNodes) {
              const bool hasDevice = std::ranges::contains(m_renderDevices, path, [](const auto &device) {
+diff --git a/src/core/outputlayer.cpp b/src/core/outputlayer.cpp
+--- a/src/core/outputlayer.cpp
++++ b/src/core/outputlayer.cpp
+@@ -221,6 +221,11 @@
+     return true;
+ }
+ 
++Region OutputLayer::adjustRenderRegion(const Region &region)
++{
++    return region;
++}
++
+ void OutputLayer::setRequiredAlphaBits(uint32_t bits)
+ {
+     m_requiredAlphaBits = bits;
+diff --git a/src/core/outputlayer.h b/src/core/outputlayer.h
+--- a/src/core/outputlayer.h
++++ b/src/core/outputlayer.h
+@@ -95,6 +95,13 @@
+      */
+     virtual bool preparePresentationTest();
+ 
++    /**
++     * Called between beginFrame() and the painting of a frame with the region that is about to be
++     * painted (device coordinates). A layer whose buffer has to be told in advance which region a
++     * frame draws into may return a larger region to paint instead; the default paints @a region.
++     */
++    virtual Region adjustRenderRegion(const Region &region);
++
+     std::optional<OutputLayerBeginFrameInfo> beginFrame();
+     bool endFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame);
+ 
 diff --git a/src/core/renderdevice.cpp b/src/core/renderdevice.cpp
 index ac6fb39..730c7c1 100644
 --- a/src/core/renderdevice.cpp
