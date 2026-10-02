@@ -19,6 +19,8 @@
 #include "opengl/glutils.h"
 #include "utils/filedescriptor.h"
 
+#include <QTimer>
+
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -47,6 +49,41 @@ AnlandEglLayer::AnlandEglLayer(AnlandOutput *output, AnlandEglBackend *backend)
     , m_display(backend->display())
 {
     connect(m_output, &BackendOutput::transformChanged, this, &AnlandEglLayer::onOutputTransformChanged);
+    if (m_backend->backend()->usesMobileGl()) {
+        // The server window changes size under the compositor (the consumer's layout moved: the
+        // extra-keys bar shown or hidden, a rotation) whether or not anything here is being drawn, so
+        // the size is polled rather than read inside a frame: a frame already begun has its scene laid
+        // out for the old output, and drawing it into the new buffer is a ghost. A poll asks MobileGL
+        // for what the server published, nothing more.
+        m_surfaceSizePoll = new QTimer(this);
+        m_surfaceSizePoll->setInterval(250);
+        connect(m_surfaceSizePoll, &QTimer::timeout, this, &AnlandEglLayer::followMobileGlSurfaceSize);
+        m_surfaceSizePoll->start();
+    }
+}
+
+void AnlandEglLayer::followMobileGlSurfaceSize()
+{
+    if (m_bufCount == 0 || !m_fbos[0]) {
+        return;
+    }
+    const EGLDisplay display = m_backend->eglDisplayObject()->handle();
+    const EGLSurface surface = m_backend->eglDisplayObject()->defaultSurface();
+    EGLint width = 0;
+    EGLint height = 0;
+    if (surface == EGL_NO_SURFACE || !eglQuerySurface(display, surface, EGL_WIDTH, &width)
+        || !eglQuerySurface(display, surface, EGL_HEIGHT, &height)) {
+        return;
+    }
+    const QSize size(width, height);
+    if (!size.isValid() || size == m_output->modeSize()) {
+        return;
+    }
+    qCInfo(KWIN_ANLAND) << "MobileGL surface is now" << size << "- resizing the output";
+    // Between frames, so the next one is laid out for the new output and drawn into the whole buffer.
+    m_output->resize(size);
+    m_fbos[0] = std::make_unique<GLFramebuffer>(0, size);
+    addDeviceRepaint(Region::infinite());
 }
 
 AnlandEglLayer::~AnlandEglLayer()
@@ -196,32 +233,10 @@ std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
         m_currentIndex = 0;
     }
 
-    if (m_backend->backend()->usesMobileGl()) {
-        // The server-owned window changes size under the compositor (the consumer's layout
-        // moved: the extra-keys bar shown or hidden, a rotation). MobileGL republishes the
-        // window's extent to its client, and eglQuerySurface is where that lands; the size read
-        // at connect time would otherwise leave the rest of the new buffer undrawn.
-        EGLint width = 0;
-        EGLint height = 0;
-        const EGLDisplay display = m_backend->eglDisplayObject()->handle();
-        const EGLSurface surface = m_backend->eglDisplayObject()->defaultSurface();
-        if (eglQuerySurface(display, surface, EGL_WIDTH, &width) && eglQuerySurface(display, surface, EGL_HEIGHT, &height)) {
-            const QSize size(width, height);
-            if (size.isValid() && size != m_fbos[0]->size()) {
-                qCInfo(KWIN_ANLAND) << "MobileGL surface is now" << size << "- resizing the output";
-                // This frame already covers the whole new buffer.
-                m_fbos[0] = std::make_unique<GLFramebuffer>(0, size);
-                // The output follows outside the frame: a mode change re-lays the scene out,
-                // which must not happen while this frame is being composited. Dropped if the
-                // output goes first.
-                QMetaObject::invokeMethod(
-                    m_output, [output = m_output, size] {
-                        output->resize(size);
-                    },
-                    Qt::QueuedConnection);
-                addDeviceRepaint(Region::infinite());
-            }
-        }
+    if (m_backend->backend()->usesMobileGl() && m_fbos[0]->size() != m_output->modeSize()) {
+        // The frame's target is always the output's mode, which the scene is laid out for: a
+        // viewport of another size draws the scene shifted, or leaves rows of the buffer unwritten.
+        m_fbos[0] = std::make_unique<GLFramebuffer>(0, m_output->modeSize());
     }
 
     return OutputLayerBeginFrameInfo{

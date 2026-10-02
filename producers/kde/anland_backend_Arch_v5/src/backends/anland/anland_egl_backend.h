@@ -12,6 +12,8 @@
 #include <array>
 #include <memory>
 
+class QTimer;
+
 extern "C" {
 #include "libdisplay_producer/display_producer.h"
 #include "libdisplay_producer/protocol.h"
@@ -48,6 +50,9 @@ public:
 
 private:
     void onOutputTransformChanged();
+    // MobileGL: the server window's size, as eglQuerySurface reports it, applied to the output
+    // between frames.
+    void followMobileGlSurfaceSize();
 
     AnlandEglBackend *const m_backend;
     AnlandOutput *m_output;
@@ -58,6 +63,7 @@ private:
     std::array<std::shared_ptr<GLTexture>, MAX_BUFS> m_textures;
     std::array<std::unique_ptr<GLFramebuffer>, MAX_BUFS> m_fbos;
     std::array<Region, MAX_BUFS> m_accumDamage;
+    QTimer *m_surfaceSizePoll = nullptr;
 };
 
 class AnlandEglBackend : public EglBackend
