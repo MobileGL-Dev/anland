@@ -375,3 +375,16 @@ index 7ebdecf..a4fc144 100644
  
      env.insert("WAYLAND_SOCKET", QByteArray::number(waylandSocket.get()));
      fdsToPass << waylandSocket.get();
+diff --git a/src/plugins/screencast/screencaststream.cpp b/src/plugins/screencast/screencaststream.cpp
+--- a/src/plugins/screencast/screencaststream.cpp
++++ b/src/plugins/screencast/screencaststream.cpp
+@@ -880,7 +880,8 @@
+ std::optional<ScreenCastDmaBufTextureParams> ScreenCastStream::testCreateDmaBuf(const QSize &size, quint32 format, const ModifierList &modifiers)
+ {
+     EglBackend *backend = qobject_cast<EglBackend *>(Compositor::self()->backend());
+-    if (!backend) {
++    // anland: no DRM device on this backend, so no dma-buf either; the stream uses memfd.
++    if (!backend || !backend->drmDevice()) {
+         return std::nullopt;
+     }
+ 

@@ -68,6 +68,12 @@ mv -f "$TMP/libkwin.so.6.7.4" /opt/mobilegl/kwin/lib/libkwin.so.6.7.4
 ln -sfn libkwin.so.6.7.4 /opt/mobilegl/kwin/lib/libkwin.so.6
 ln -sfn libkwin.so.6 /opt/mobilegl/kwin/lib/libkwin.so
 rmdir "$TMP"
+# KWin loads its plugins from the system plugin path, so the patched screencast plugin (no dma-buf
+# probe without a DRM device: a window screencast, e.g. a task-manager thumbnail, crashed KWin)
+# replaces the distro one in place; the original is kept beside it.
+SCREENCAST=/usr/lib/qt6/plugins/kwin/plugins/screencast.so
+[ -f "$SCREENCAST.orig" ] || cp -a "$SCREENCAST" "$SCREENCAST.orig"
+install -m755 "$BUILD/bin/kwin/plugins/screencast.so" "$SCREENCAST.new" && mv -f "$SCREENCAST.new" "$SCREENCAST"
 install -m755 "$SYNC/misc/mobilegl-startup.sh" /opt/mobilegl/bin/mobilegl-startup.sh
 
 echo "== installed =="
