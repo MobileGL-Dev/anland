@@ -82,11 +82,11 @@ install_chrome_launcher() {
 
 case "$MODE" in
     chrome)
-        # ANGLE's GLES-on-EGL backend over the system EGL, which is MobileGL's vendor. Chrome's
-        # Wayland GPU process only presents through dma-bufs from a GBM device, which neither
-        # MobileGL nor this compositor takes; with the GPU in the browser process Chrome draws
-        # into wl_egl_windows on its own Wayland connection instead, which MobileGL presents. It
-        # is pointed at no render node so it does not set up GBM scanout buffers at all. On
+        # ANGLE's GLES-on-EGL backend over the system EGL, which is MobileGL's vendor. With the GPU
+        # in the browser process Chrome draws into wl_egl_windows on its own Wayland connection,
+        # which MobileGL presents as linux-dmabuf buffers backed by server images - no readback.
+        # It is pointed at no render node so it keeps that path rather than allocating its own
+        # GBM scanout buffers. On
         # that path Chrome never sends its fractional-scale viewport, so on this scale-2 output
         # the window would show at twice its size; with integer scaling it sends
         # wl_surface.set_buffer_scale, which the frames MobileGL attaches then carry.
