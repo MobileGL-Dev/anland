@@ -196,6 +196,34 @@ std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
         m_currentIndex = 0;
     }
 
+    if (m_backend->backend()->usesMobileGl()) {
+        // The server-owned window changes size under the compositor (the consumer's layout
+        // moved: the extra-keys bar shown or hidden, a rotation). MobileGL republishes the
+        // window's extent to its client, and eglQuerySurface is where that lands; the size read
+        // at connect time would otherwise leave the rest of the new buffer undrawn.
+        EGLint width = 0;
+        EGLint height = 0;
+        const EGLDisplay display = m_backend->eglDisplayObject()->handle();
+        const EGLSurface surface = m_backend->eglDisplayObject()->defaultSurface();
+        if (eglQuerySurface(display, surface, EGL_WIDTH, &width) && eglQuerySurface(display, surface, EGL_HEIGHT, &height)) {
+            const QSize size(width, height);
+            if (size.isValid() && size != m_fbos[0]->size()) {
+                qCInfo(KWIN_ANLAND) << "MobileGL surface is now" << size << "- resizing the output";
+                // This frame already covers the whole new buffer.
+                m_fbos[0] = std::make_unique<GLFramebuffer>(0, size);
+                // The output follows outside the frame: a mode change re-lays the scene out,
+                // which must not happen while this frame is being composited. Dropped if the
+                // output goes first.
+                QMetaObject::invokeMethod(
+                    m_output, [output = m_output, size] {
+                        output->resize(size);
+                    },
+                    Qt::QueuedConnection);
+                addDeviceRepaint(Region::infinite());
+            }
+        }
+    }
+
     return OutputLayerBeginFrameInfo{
         .renderTarget = m_backend->backend()->usesMobileGl()
             // No FlipY here: eglSwapBuffers into the server-owned Android window is
