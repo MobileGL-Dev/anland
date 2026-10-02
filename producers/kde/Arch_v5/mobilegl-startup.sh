@@ -58,11 +58,15 @@ case "$MODE" in
         # Wayland GPU process only presents through dma-bufs from a GBM device, which neither
         # MobileGL nor this compositor takes; with the GPU in the browser process Chrome draws
         # into wl_egl_windows on its own Wayland connection instead, which MobileGL presents. It
-        # is pointed at no render node so it does not set up GBM scanout buffers at all.
+        # is pointed at no render node so it does not set up GBM scanout buffers at all. On
+        # that path Chrome never sends its fractional-scale viewport, so on this scale-2 output
+        # the window would show at twice its size; with integer scaling it sends
+        # wl_surface.set_buffer_scale, which the frames MobileGL attaches then carry.
         export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT" MOBILEGL_IPC_SURFACE=offscreen
         exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
             --in-process-gpu --ignore-gpu-blocklist \
-            --render-node-override=/dev/dri/mobilegl-no-render-node "$@"
+            --render-node-override=/dev/dri/mobilegl-no-render-node \
+            --disable-features=WaylandFractionalScaleV1 "$@"
         ;;
     compositor)
         [ -x "$KWIN_BIN" ] || { echo "KWin binary missing: $KWIN_BIN" >&2; exit 1; }
