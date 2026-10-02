@@ -27,13 +27,43 @@ if [ -S "$XDG_RUNTIME_DIR/bus" ]; then
     export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 fi
 export __EGL_VENDOR_LIBRARY_FILENAMES="$MOBILEGL_VENDOR_JSON"
+# X11 clients (through Xwayland) take GLX from glvnd's libGLX, which would load the vendor
+# Xwayland names (Mesa, which wants a GPU device the container's clients cannot use).
+# libGLX_mobilegl.so.0 is installed by anland-build-client.sh.
+export __GLX_VENDOR_LIBRARY_NAME=mobilegl
 export MOBILEGL_TRANSPORT=spawn MOBILEGL_IPC_DATA=shm
 export KWIN_DISABLE_VULKAN=1 KWIN_NO_TIMER_QUERY=1 KWIN_PERSISTENT_VBO=0
 export KWIN_DISABLE_UDMABUF_IMPORT=1
 unset MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER FD_FORCE_KGSL ANLAND_DRM_DEVICE
 unset XWAYLAND_GBM_DEVICE ANLAND_SKIP_IMPLICIT_SYNC_WAIT
 
+CHROME_BIN="${CHROME_BIN:-/opt/google/chrome/google-chrome}"
+HELPER_PATH="$(readlink -f "$0")"
+
+# The image's /usr/local/bin/google-chrome runs Chrome on ANGLE's Vulkan backend over the
+# container's own GPU driver. In this session the menu and the panel launch it through this
+# helper instead (a per-user copy of its .desktop file), so Chrome draws through MobileGL.
+install_chrome_launcher() {
+    local system_desktop=/usr/share/applications/google-chrome.desktop
+    [ -r "$system_desktop" ] && [ -x "$CHROME_BIN" ] || return 0
+    local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$apps"
+    sed -E "s#^Exec=/usr/local/bin/google-chrome#Exec=$HELPER_PATH chrome#" \
+        "$system_desktop" > "$apps/google-chrome.desktop"
+}
+
 case "$MODE" in
+    chrome)
+        # ANGLE's GLES-on-EGL backend over the system EGL, which is MobileGL's vendor. Chrome's
+        # Wayland GPU process only presents through dma-bufs from a GBM device, which neither
+        # MobileGL nor this compositor takes; with the GPU in the browser process Chrome draws
+        # into wl_egl_windows on its own Wayland connection instead, which MobileGL presents. It
+        # is pointed at no render node so it does not set up GBM scanout buffers at all.
+        export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT" MOBILEGL_IPC_SURFACE=offscreen
+        exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
+            --in-process-gpu --ignore-gpu-blocklist \
+            --render-node-override=/dev/dri/mobilegl-no-render-node "$@"
+        ;;
     compositor)
         [ -x "$KWIN_BIN" ] || { echo "KWin binary missing: $KWIN_BIN" >&2; exit 1; }
         [ -r "$MOBILEGL_VENDOR_JSON" ] || { echo "MobileGL EGL vendor missing: $MOBILEGL_VENDOR_JSON" >&2; exit 1; }
@@ -82,11 +112,12 @@ Environment="KWIN_DISABLE_UDMABUF_IMPORT=1"
 Environment="QT_LOGGING_RULES=kwin_*.info=true"
 EOF
         systemctl --user daemon-reload
-        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES MOBILEGL_TRANSPORT MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM
+        install_chrome_launcher
+        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME MOBILEGL_TRANSPORT MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM
         exec startplasma-wayland "$@"
         ;;
     *)
-        echo "Usage: $0 [compositor|plasma] [arguments...]" >&2
+        echo "Usage: $0 [compositor|plasma|chrome] [arguments...]" >&2
         exit 2
         ;;
 esac
