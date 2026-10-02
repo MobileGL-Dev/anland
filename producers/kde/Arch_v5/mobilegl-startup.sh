@@ -34,6 +34,9 @@ case "$MODE" in
         [ -x "$KWIN_BIN" ] || { echo "KWin binary missing: $KWIN_BIN" >&2; exit 1; }
         [ -r "$MOBILEGL_VENDOR_JSON" ] || { echo "MobileGL EGL vendor missing: $MOBILEGL_VENDOR_JSON" >&2; exit 1; }
         export ANLAND_MOBILEGL=1 ANLAND_SOCKET
+        # Client-side MobileGL log: the compositor's own stderr goes to the
+        # journal, MobileGL's diagnostics go here.
+        export MOBILEGL_LOG_FILE_PATH="${MOBILEGL_LOG_FILE_PATH:-/tmp/mobilegl-compositor.log}"
         # This directory contains the rebuilt KWin library, without EGL/GL
         # aliases; EGL selection still goes through the GLVND vendor JSON.
         export LD_LIBRARY_PATH="$KWIN_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

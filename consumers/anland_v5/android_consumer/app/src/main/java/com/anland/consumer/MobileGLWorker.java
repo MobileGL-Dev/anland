@@ -38,7 +38,7 @@ public final class MobileGLWorker extends Service {
             // Configure before dlopen: MobileGL chooses its process role at load.
             Os.setenv("MOBILEGL_IPC_DIAL", "no", true);
             Os.setenv("MOBILEGL_IPC_ROLE", "server", true);
-            Os.setenv("MOBILEGL_BACKEND_TYPE", "Espryt", true);
+            Os.setenv("MOBILEGL_BACKEND_TYPE", "DirectGLES", true);
             Os.setenv("MOBILEGL_LOG_FILE_PATH", getFilesDir() + "/mobilegl-server.log", true);
             Os.unsetenv("MOBILEGL_TRANSPORT");
             Os.unsetenv("MOBILEGL_IPC_SERVER_PATH");

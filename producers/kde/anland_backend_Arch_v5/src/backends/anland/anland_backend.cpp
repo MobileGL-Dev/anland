@@ -175,7 +175,7 @@ bool AnlandBackend::initialize()
         };
         EGLConfig config = nullptr;
         EGLint count = 0;
-        if (!eglChooseConfig(eglDisplay->handle(), attributes, &config, 1, &count) || count != 1) {
+        if (!eglChooseConfig(eglDisplay->handle(), attributes, &config, 1, &count) || count < 1) {
             qCWarning(KWIN_ANLAND) << "MobileGL has no RGBA window config";
             return false;
         }
