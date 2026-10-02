@@ -14,7 +14,7 @@ set -euo pipefail
 # adb is a Windows exe reached from Git Bash; stop MSYS from mangling
 # /data/... and /tmp/... remote paths into C:\Program Files\Git\...
 export MSYS2_ARG_CONV_EXCL='*'
-REPO="${MOBILEGL_REPO:-/c/Users/Swung0x48/repos/FoldCraftLauncher/MobileGL}"
+REPO="${MOBILEGL_REPO:?set MOBILEGL_REPO to the MobileGL worktree (submodules initialized)}"
 TOOLS="$(cd "$(dirname "$0")" && pwd)"
 TAR="${TMPDIR:-/tmp}/anland-mobilegl-source.tar.gz"
 APPLY="${TMPDIR:-/tmp}/anland-apply-source.sh"
@@ -45,20 +45,6 @@ echo "[apply] source swapped"
 EOS
 adb -s "$SERIAL" push "$APPLY" /data/local/tmp/anland-apply-source.sh >/dev/null
 adb -s "$SERIAL" shell "su -c 'sh /data/local/tmp/anland-apply-source.sh'"
-
-# A worktree whose 3rdparty/glslang is a dirty submodule (missing patches the
-# recorded gitlink has) builds a client that SIGSEGVs in shader compilation.
-# Overlay the recorded revision, preserving the nested External/ checkouts
-# glslang's own git does not track. Regenerate the archive with:
-#   git -C 3rdparty/glslang archive --format=tar.gz -o /tmp/glslang-clean.tar.gz \
-#       $(git ls-tree HEAD 3rdparty/glslang | awk '{print $3}')
-GLSLANG_TAR="${GLSLANG_CLEAN_TAR:-${TMPDIR:-/tmp}/glslang-clean.tar.gz}"
-if [ -f "$GLSLANG_TAR" ]; then
-    echo "[sync] overlaying recorded glslang..."
-    adb -s "$SERIAL" push "$GLSLANG_TAR" /data/local/tmp/glslang-clean.tar.gz >/dev/null
-    adb -s "$SERIAL" push "$TOOLS/anland-overlay-glslang.sh" /data/local/tmp/ >/dev/null
-    adb -s "$SERIAL" shell "su -c 'sh /data/local/tmp/anland-overlay-glslang.sh'"
-fi
 
 if [ "${1:-}" = "build" ]; then
     echo "[sync] launching incremental client build in clone..."
