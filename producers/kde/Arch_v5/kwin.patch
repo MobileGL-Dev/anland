@@ -186,11 +186,11 @@ index 75c7e73..3afd636 100644
      DrmDevice *scanoutDevice = drmDevice();
 -    Q_ASSERT(scanoutDevice);
 +    if (!scanoutDevice) {
-+        // A split provider cannot import client dma-bufs or DRM timelines.
-+        // Keep Wayland shm clients available without advertising either.
-+        auto *dmabuf = waylandServer()->linuxDmabuf();
-+        dmabuf->setRenderBackend(this);
-+        dmabuf->setSupportedFormatsWithModifiers({});
++        // A split provider cannot import client dma-bufs or DRM timelines, so
++        // linux-dmabuf is not created at all: linuxDmabuf() would advertise the
++        // global, and with no tranches its format table stays null, which a
++        // client asking for default feedback (Chrome) dereferenced in KWin.
++        // Clients fall back to wl_shm.
 +        waylandServer()->setRenderBackend(this);
 +        return;
 +    }
