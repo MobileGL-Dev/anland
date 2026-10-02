@@ -13,6 +13,12 @@ has no dma-buf fd. KWin validates the marker instead of importing a gralloc
 buffer into Mesa. The normal Mesa/kgsl backend is selected when
 `ANLAND_MOBILEGL` is absent.
 
+Because the EGL window and its default framebuffer belong to KWin in this mode,
+a consumer flap does not stop composition: on fallback the backend keeps the
+RenderLoop running and only drops the channels that live on the consumer's fds
+(frame acknowledgement is failed, input/buffer-ready notifiers, audio, camera).
+The reconnect timer still retries until the consumer's fd deposit arrives.
+
 ## Build and install
 
 Use the `Arch_v5/kwin.patch` together with `anland_backend_Arch_v5` and the

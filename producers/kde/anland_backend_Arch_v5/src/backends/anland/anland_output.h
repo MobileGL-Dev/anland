@@ -59,6 +59,12 @@ public:
      *  for the new size. */
     void resize(const QSize &newSize);
 
+    /** Give up on a frame that was handed to the consumer and never acknowledged:
+     *  the RenderLoop's accounting must not wait for a buffer-ready that will never
+     *  come. MobileGL mode calls this on fallback without inhibiting the RenderLoop,
+     *  because there the EGL surface is the compositor's own, not the consumer's. */
+    void failPendingFrame();
+
     /** Consumer went away (fallback): fail any in-flight frame and inhibit() the
      *  RenderLoop so the compositor stops trying to render into dmabufs that no
      *  longer exist. */

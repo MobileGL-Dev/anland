@@ -536,19 +536,35 @@ void AnlandBackend::enterFallback()
         m_inputDevice->touchCancel();
     }
 
-    // A frame may be in flight awaiting a buffer-ready that will never come now;
-    // fail it so the RenderLoop's frame accounting does not stall.
-    if (!m_outputs.isEmpty()) {
-        m_outputs[0]->stopRendering();
+    if (m_mobileGl) {
+        // MobileGL has no consumer-owned images to lose: the compositor owns the EGL
+        // window and swaps into it directly, so the consumer is only the fd/pacing peer
+        // (frame acknowledgement, input, clipboard, scheduling). Stopping the RenderLoop
+        // or dropping the default framebuffer here would leave the desktop uncomposted
+        // for as long as the consumer is away, and the reconnect timer alone cannot
+        // revive it: try_exit_fallback() still needs the consumer's fd deposit. So keep
+        // drawing, and only fail the frame that the missing acknowledgement stranded.
+        if (!m_outputs.isEmpty()) {
+            m_outputs[0]->failPendingFrame();
+        }
+    } else {
+        // A frame may be in flight awaiting a buffer-ready that will never come now;
+        // fail it so the RenderLoop's frame accounting does not stall.
+        if (!m_outputs.isEmpty()) {
+            m_outputs[0]->stopRendering();
+        }
     }
 
+    // The notifiers watch the consumer's fds, which the transport has just released.
     teardownNotifiers();
 
-    // Renderer is stopped: drop the imported dmabuf set now that the producer's fds
-    // are gone. The layer is null at startup (no GL backend attached yet).
-    if (!m_outputs.isEmpty()) {
-        if (AnlandEglLayer *layer = m_outputs[0]->eglLayer()) {
-            layer->releaseBuffers();
+    if (!m_mobileGl) {
+        // Renderer is stopped: drop the imported dmabuf set now that the producer's fds
+        // are gone. The layer is null at startup (no GL backend attached yet).
+        if (!m_outputs.isEmpty()) {
+            if (AnlandEglLayer *layer = m_outputs[0]->eglLayer()) {
+                layer->releaseBuffers();
+            }
         }
     }
 

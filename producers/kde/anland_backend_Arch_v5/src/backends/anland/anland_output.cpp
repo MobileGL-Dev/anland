@@ -156,12 +156,17 @@ AnlandEglLayer *AnlandOutput::eglLayer() const
     return m_layer.get();
 }
 
-void AnlandOutput::stopRendering()
+void AnlandOutput::failPendingFrame()
 {
     if (m_awaitingPresent) {
         m_awaitingPresent = false;
         m_frame.reset();
     }
+}
+
+void AnlandOutput::stopRendering()
+{
+    failPendingFrame();
 
     if (!m_renderingInhibited) {
         m_renderLoop->inhibit();
