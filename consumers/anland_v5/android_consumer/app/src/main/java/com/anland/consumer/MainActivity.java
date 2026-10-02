@@ -46,6 +46,14 @@ public class MainActivity extends Activity
 
     private SurfaceView surfaceView;
     private boolean surfaceReady = false;
+    // True while the MobileGL-mode pipeline runs for the current Surface. That mode
+    // anchors one long-lived daemon link to the Surface (the embedded server owns the
+    // EGL surface), so only the Surface's own lifecycle may start or stop it.
+    private boolean mobileglStarted = false;
+    // The connection settings (see applyConnectionConfig) this window pushed last.
+    // They are fixed at connect time, so a change is the one non-Surface reason to
+    // reconnect a MobileGL session.
+    private String appliedConfigKey;
     // System-clipboard bridge; also the target for the native clipboard callbacks.
     private Clipboard clipboard;
     private static final String PREFS_NAME = "anland_settings";
@@ -329,7 +337,11 @@ public class MainActivity extends Activity
     // before (re)connecting. The root helper is the executable bundled in the
     // app's native lib dir; the bridge is a unix socket in our cache dir that
     // the helper, launched via su, uses to hand back the daemon fd.
-    private void applyConnectionConfig() {
+    //
+    // Returns true when these settings differ from the ones this window pushed last:
+    // they are fixed at connect time, so a running pipeline can only pick a change up
+    // through a new connect (see onResume).
+    private boolean applyConnectionConfig() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         mNative.setMobileGL(mobileglEnabled());
         String sock = resolveSocketPath();
@@ -349,6 +361,11 @@ public class MainActivity extends Activity
         customScreenWidth = prefs.getInt("custom_width", 0);
         customScreenHeight = prefs.getInt("custom_height", 0);
         mNative.setCustomResolution(customW, customH);
+        String key = sock + "|" + useRoot + "|" + customW + "x" + customH + "|" + topApp + "|"
+                + topAppMode + "|" + topAppStops;
+        boolean changed = !key.equals(appliedConfigKey);
+        appliedConfigKey = key;
+        return changed;
     }
 
     // The daemon socket this window targets: the launch-Intent override if any,
@@ -378,8 +395,16 @@ public class MainActivity extends Activity
             int width = customScreenWidth > 0 ? customScreenWidth : viewWidth;
             int height = customScreenHeight > 0 ? customScreenHeight : viewHeight;
             mobileglConnection.attach(surface, width, height, () -> {
-                if (mNative != null && surfaceReady && mResumed)
+                // attach() doubles as the geometry-refresh path: the embedded server
+                // asks for an extent, the holder reports it back. Only the first attach
+                // of a Surface may start the pipeline -- restarting it closes the
+                // consumer's fds, and the daemon only hands the producer a new set once
+                // the consumer has deposited one, so a restart leaves KWin's Anland
+                // backend in fallback (an uncomposted desktop) until that happens.
+                if (mNative != null && surfaceReady && mResumed && !mobileglStarted) {
+                    mobileglStarted = true;
                     mNative.start(surface, clipboard, this);
+                }
             });
         } else {
             mobileglConnection.detach();
@@ -1611,9 +1636,27 @@ public class MainActivity extends Activity
         // later reconnect. Idempotent, so safe to call on every resume.
         applyCameraState();
         if (surfaceReady) {
-            mNative.stop();
-            applyConnectionConfig();
-            startNative(surfaceView.getHolder().getSurface());
+            final boolean configChanged = applyConnectionConfig();
+            if (mobileglEnabled()) {
+                // Keep the MobileGL session across a pause. Its EGL surface belongs to
+                // the embedded server, so this consumer is only the daemon's fd/pacing
+                // peer; stopping it drops the fd set the producer needs, and until the
+                // consumer deposits a new one KWin's Anland backend stays in fallback
+                // with nothing presented. The pipeline starts with the first Surface
+                // and is stopped when that Surface goes away.
+                if (!mobileglStarted) {
+                    startNative(surfaceView.getHolder().getSurface());
+                } else if (configChanged) {
+                    // Reconnect only for a real settings change: the daemon socket,
+                    // root mode, custom resolution and top-app helper are fixed at
+                    // connect time, so this is how a change made in Settings lands.
+                    mNative.stop();
+                    startNative(surfaceView.getHolder().getSurface());
+                }
+            } else {
+                mNative.stop();
+                startNative(surfaceView.getHolder().getSurface());
+            }
             pushRefreshRate();
             applyMicState();
             applyAudioLatency();
@@ -1668,7 +1711,13 @@ public class MainActivity extends Activity
         DisplayManager dm = getSystemService(DisplayManager.class);
         if (dm != null)
             dm.unregisterDisplayListener(displayListener);
-        mNative.stop();
+        // MobileGL keeps its session across a pause: the embedded server owns the
+        // output Surface, so tearing the consumer down for a permission dialog or the
+        // lock screen would leave KWin's Anland backend in fallback -- and the desktop
+        // uncomposted -- until the window comes back. The pipeline is stopped in
+        // surfaceDestroyed(), when the Surface is really gone.
+        if (!mobileglEnabled())
+            mNative.stop();
         abandonMediaAudioFocus();
     }
 
@@ -1802,9 +1851,24 @@ public class MainActivity extends Activity
         // Same ordering guarantee as onResume: camera service settled before connect.
         applyCameraState();
         releaseScreenTouches();
-        mNative.stop();
-        applyConnectionConfig();
-        startNative(holder.getSurface());
+        if (mobileglEnabled()) {
+            // MobileGL mode: reportGeometry() above already handed this extent to the
+            // embedded server, which owns the EGL surface. Deliberately no
+            // stop()/startNative() here -- every stop drops the fd set the daemon has
+            // to deliver before KWin's Anland backend can leave fallback, so a plain
+            // relayout (IME inset, rotation, the server's own geometry request) used to
+            // blank the desktop. Start the pipeline only for this window's first
+            // Surface; a later extent change is carried by the server-owned window, and
+            // KWin keeps the mode it read at connect time until the next real (re)connect.
+            if (!mobileglStarted) {
+                applyConnectionConfig();
+                startNative(holder.getSurface());
+            }
+        } else {
+            mNative.stop();
+            applyConnectionConfig();
+            startNative(holder.getSurface());
+        }
         pushRefreshRate();
         applyMicState();
         applyAudioLatency();
@@ -1819,6 +1883,7 @@ public class MainActivity extends Activity
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         surfaceReady = false;
+        mobileglStarted = false;
         if (mobileglConnection != null) mobileglConnection.detach();
         if (immersive != null) immersive.stop();
         OplusRefreshRateLease.release(this);

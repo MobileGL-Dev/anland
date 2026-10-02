@@ -31,8 +31,13 @@ window owner and Surface generation, so a resize updates the existing native
 window lease instead of detaching a live GL session. A replaced or destroyed
 Surface is detached before its Java/native references are released. Native
 geometry requests are posted to Anland's `SurfaceHolder` as a one-way Binder
-call; `surfaceChanged` reports the resulting buffer extent to the worker before
-it stops the native transport.
+call; `surfaceChanged` reports the resulting buffer extent to the worker and
+leaves the session running. Only a destroyed Surface stops the native transport:
+a pause, a permission dialog or a relayout must not, because every stop forces
+the daemon to deliver a new fd set before KWin's Anland backend can leave
+fallback, which leaves the desktop uncomposted until it does. A changed daemon
+socket, root mode, custom resolution or top-app helper still reconnects, since
+those are fixed when the connection is made.
 
 ## Build
 
