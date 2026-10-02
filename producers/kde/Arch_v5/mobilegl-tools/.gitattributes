@@ -1,0 +1,2 @@
+# These scripts run inside the Linux clone and on Android; a CRLF checkout breaks bash.
+*.sh text eol=lf

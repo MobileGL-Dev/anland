@@ -19,17 +19,23 @@ TOOLS="$(cd "$(dirname "$0")" && pwd)"
 TAR="${TMPDIR:-/tmp}/anland-mobilegl-source.tar.gz"
 APPLY="${TMPDIR:-/tmp}/anland-apply-source.sh"
 SERIAL="${ANLAND_SERIAL:-HA27Q3LQ}"
+# With argument conversion off, adb (a Windows exe) needs the LOCAL paths spelled for Windows.
+local_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 
 cd "$REPO"
 echo "[sync] tarring worktree (HEAD $(git rev-parse --short HEAD) + WIP)..."
-tar --exclude='./.git' --exclude='./.cxx' --exclude='./build' \
+# The tar carries no .git, so the client's build stamp travels as a file
+# (anland-build-client.sh passes it as -DMOBILEGL_BUILD_STAMP).
+git rev-parse HEAD > .anland-build-stamp
+tar --exclude='./.git' --exclude='./.cxx' --exclude='./build' --exclude='./build-*' \
+    --exclude='./cmake-build-*' \
     --exclude='./tools/trace_replay' \
     --exclude='./android-plugin/app/build' --exclude='./android-plugin/.gradle' \
     -czf "$TAR" .
 ls -la "$TAR"
 
 echo "[sync] pushing to device..."
-adb -s "$SERIAL" push "$TAR" /data/local/tmp/anland-mobilegl-source.tar.gz
+adb -s "$SERIAL" push "$(local_path "$TAR")" /data/local/tmp/anland-mobilegl-source.tar.gz
 
 cat > "$APPLY" <<'EOS'
 #!/system/bin/sh
@@ -43,12 +49,13 @@ mv "$DEST.new" "$DEST"
 rm -rf "$DEST.old"
 echo "[apply] source swapped"
 EOS
-adb -s "$SERIAL" push "$APPLY" /data/local/tmp/anland-apply-source.sh >/dev/null
+adb -s "$SERIAL" push "$(local_path "$APPLY")" /data/local/tmp/anland-apply-source.sh >/dev/null
 adb -s "$SERIAL" shell "su -c 'sh /data/local/tmp/anland-apply-source.sh'"
 
 if [ "${1:-}" = "build" ]; then
     echo "[sync] launching incremental client build in clone..."
-    adb -s "$SERIAL" push "$TOOLS/anland-launch-client-build.sh" /data/local/tmp/ >/dev/null
+    adb -s "$SERIAL" push "$(local_path "$TOOLS/anland-launch-client-build.sh")" "$(local_path "$TOOLS/anland-build-client.sh")" /data/local/tmp/ >/dev/null
+    adb -s "$SERIAL" shell "su -c 'cp /data/local/tmp/anland-build-client.sh /mnt/Droidspaces/arch-kde-mgl/root/anland-build-client.sh'"
     adb -s "$SERIAL" shell "su -c 'sh /data/local/tmp/anland-launch-client-build.sh'"
 fi
 echo "[sync] done."
