@@ -9,7 +9,11 @@ if [ "$#" -gt 0 ]; then shift; fi
 KWIN_BIN="${KWIN_BIN:-/opt/mobilegl/kwin/bin/kwin_wayland}"
 KWIN_LIB_DIR="${KWIN_LIB_DIR:-/opt/mobilegl/kwin/lib}"
 MOBILEGL_VENDOR_JSON="${MOBILEGL_VENDOR_JSON:-/opt/mobilegl/share/glvnd/egl_vendor.d/50_mobilegl.json}"
-ANLAND_SOCKET="${ANLAND_SOCKET:-/run/display.sock}"
+# This launcher serves the MobileGL experiment only. /etc/environment leaks a
+# Mesa-baseline ANLAND_SOCKET into the login session through pam_env, which
+# would silently override the systemd drop-in; the experiment's daemon socket
+# is therefore the default here, not /run/display.sock.
+ANLAND_SOCKET="${ANLAND_MOBILEGL_SOCKET:-/run/anland-mobilegl/display.sock}"
 # One endpoint for every client. The embedded server in the Anland APK owns the
 # session schedule; the launcher only points clients at it.
 MOBILEGL_ENDPOINT="${MOBILEGL_ENDPOINT:-unix:@anland-mobilegl}"
@@ -55,13 +59,27 @@ case "$MODE" in
         mkdir -p "$UNIT_DIR"
         cat > "$UNIT_DIR/mobilegl.conf" <<EOF
 [Service]
+# The unit has BusName=org.kde.KWinWrapper: the compositor must come up
+# through kwin_wayland_wrapper (it registers the name) or the service never
+# leaves "starting" and systemd kills it 90s in, taking the session with it.
+# Our kwin_wayland wins via PATH.
 ExecStart=
-ExecStart="$HELPER" compositor
-Environment="KWIN_BIN=$KWIN_BIN"
-Environment="KWIN_LIB_DIR=$KWIN_LIB_DIR"
-Environment="MOBILEGL_VENDOR_JSON=$MOBILEGL_VENDOR_JSON"
+ExecStart=/usr/bin/kwin_wayland_wrapper --xwayland
+Environment="PATH=/opt/mobilegl/kwin/bin:/usr/local/bin:/usr/bin"
+Environment="LD_LIBRARY_PATH=$KWIN_LIB_DIR"
+Environment="__EGL_VENDOR_LIBRARY_FILENAMES=$MOBILEGL_VENDOR_JSON"
+Environment="ANLAND_MOBILEGL=1"
 Environment="ANLAND_SOCKET=$ANLAND_SOCKET"
-Environment="MOBILEGL_ENDPOINT=$MOBILEGL_ENDPOINT"
+Environment="MOBILEGL_TRANSPORT=spawn"
+Environment="MOBILEGL_IPC_DATA=shm"
+Environment="MOBILEGL_IPC_CONTROL=$MOBILEGL_ENDPOINT"
+Environment="MOBILEGL_IPC_SURFACE=server"
+Environment="MOBILEGL_LOG_FILE_PATH=/tmp/mobilegl-compositor.log"
+Environment="KWIN_DISABLE_VULKAN=1"
+Environment="KWIN_NO_TIMER_QUERY=1"
+Environment="KWIN_PERSISTENT_VBO=0"
+Environment="KWIN_DISABLE_UDMABUF_IMPORT=1"
+Environment="QT_LOGGING_RULES=kwin_*.info=true"
 EOF
         systemctl --user daemon-reload
         dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES MOBILEGL_TRANSPORT MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM

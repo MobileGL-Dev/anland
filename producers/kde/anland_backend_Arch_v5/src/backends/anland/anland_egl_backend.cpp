@@ -198,7 +198,10 @@ std::optional<OutputLayerBeginFrameInfo> AnlandEglLayer::doBeginFrame()
 
     return OutputLayerBeginFrameInfo{
         .renderTarget = m_backend->backend()->usesMobileGl()
-            ? RenderTarget(m_fbos[0].get(), m_output->transform().combine(OutputTransform::FlipY))
+            // No FlipY here: eglSwapBuffers into the server-owned Android window is
+            // already top-down; the flip is only correct for the dmabuf path,
+            // where the consumer's blit applies its own transform.
+            ? RenderTarget(m_fbos[0].get(), m_output->transform())
             : RenderTarget(m_fbos[m_currentIndex].get()),
         // Android's BufferQueue rotates its own buffers; until buffer age is
         // exposed by the split client every swap needs a complete repaint.
