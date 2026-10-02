@@ -32,6 +32,15 @@ export __EGL_VENDOR_LIBRARY_FILENAMES="$MOBILEGL_VENDOR_JSON"
 # libGLX_mobilegl.so.0 is installed by anland-build-client.sh.
 export __GLX_VENDOR_LIBRARY_NAME=mobilegl
 export MOBILEGL_TRANSPORT=spawn MOBILEGL_IPC_DATA=shm
+# The backend every client asks the embedded server for: DirectGLES or DirectVulkan. The
+# server serves one backend per process and refuses a client that asks for the other, so it
+# must match the Anland app's choice (`--es mobilegl_backend`, or on a debuggable build
+# `setprop debug.mobilegl.backend`). Kept in /etc/mobilegl/backend; DirectGLES when absent.
+MOBILEGL_BACKEND_FILE="${MOBILEGL_BACKEND_FILE:-/etc/mobilegl/backend}"
+if [ -z "${MOBILEGL_BACKEND_TYPE:-}" ] && [ -r "$MOBILEGL_BACKEND_FILE" ]; then
+    MOBILEGL_BACKEND_TYPE="$(tr -d '[:space:]' < "$MOBILEGL_BACKEND_FILE")"
+fi
+export MOBILEGL_BACKEND_TYPE="${MOBILEGL_BACKEND_TYPE:-DirectGLES}"
 export KWIN_DISABLE_VULKAN=1 KWIN_NO_TIMER_QUERY=1 KWIN_PERSISTENT_VBO=0
 export KWIN_DISABLE_UDMABUF_IMPORT=1
 unset MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER FD_FORCE_KGSL ANLAND_DRM_DEVICE
@@ -105,6 +114,7 @@ Environment="__EGL_VENDOR_LIBRARY_FILENAMES=$MOBILEGL_VENDOR_JSON"
 Environment="ANLAND_MOBILEGL=1"
 Environment="ANLAND_SOCKET=$ANLAND_SOCKET"
 Environment="MOBILEGL_TRANSPORT=spawn"
+Environment="MOBILEGL_BACKEND_TYPE=$MOBILEGL_BACKEND_TYPE"
 Environment="MOBILEGL_IPC_DATA=shm"
 Environment="MOBILEGL_IPC_CONTROL=$MOBILEGL_ENDPOINT"
 Environment="MOBILEGL_IPC_SURFACE=server"
@@ -117,7 +127,7 @@ Environment="QT_LOGGING_RULES=kwin_*.info=true"
 EOF
         systemctl --user daemon-reload
         install_chrome_launcher
-        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME MOBILEGL_TRANSPORT MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM
+        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME MOBILEGL_TRANSPORT MOBILEGL_BACKEND_TYPE MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM
         exec startplasma-wayland "$@"
         ;;
     *)

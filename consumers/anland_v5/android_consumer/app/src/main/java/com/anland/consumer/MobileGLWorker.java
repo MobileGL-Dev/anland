@@ -1,6 +1,7 @@
 package com.anland.consumer;
 
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
 import android.os.IBinder;
@@ -9,6 +10,11 @@ import android.os.RemoteException;
 import android.system.Os;
 import android.util.Log;
 import android.view.Surface;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 
 /**
  * The unified renderer host. This private, same-UID {@code :mobilegl} service
@@ -32,13 +38,50 @@ public final class MobileGLWorker extends Service {
         System.loadLibrary("anland_mobilegl");
     }
 
+    // The MobileGL backend this process serves with: "DirectGLES" (the default) or
+    // "DirectVulkan". Chosen by the activity's `mobilegl_backend` launch extra and kept in
+    // a file, because this service runs in its own process and reads it once, before the
+    // library loads; the choice takes effect the next time the :mobilegl process starts.
+    static final String BACKEND_FILE = "mobilegl-backend";
+    static final String DEFAULT_BACKEND = "DirectGLES";
+
+    static boolean isKnownBackend(String backend) {
+        return "DirectGLES".equals(backend) || "DirectVulkan".equals(backend);
+    }
+
+    static void saveBackend(Context context, String backend) {
+        if (!isKnownBackend(backend)) {
+            Log.w(TAG, "Ignoring unknown MobileGL backend '" + backend + "'");
+            return;
+        }
+        try {
+            Files.write(new File(context.getFilesDir(), BACKEND_FILE).toPath(),
+                    backend.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException error) {
+            Log.e(TAG, "Could not save the MobileGL backend choice", error);
+        }
+    }
+
+    static String loadBackend(Context context) {
+        try {
+            String backend = new String(Files.readAllBytes(
+                    new File(context.getFilesDir(), BACKEND_FILE).toPath()), StandardCharsets.UTF_8).trim();
+            if (isKnownBackend(backend)) return backend;
+        } catch (IOException ignored) {
+            // No choice saved yet.
+        }
+        return DEFAULT_BACKEND;
+    }
+
     @Override public void onCreate() {
         super.onCreate();
         try {
             // Configure before dlopen: MobileGL chooses its process role at load.
             Os.setenv("MOBILEGL_IPC_DIAL", "no", true);
             Os.setenv("MOBILEGL_IPC_ROLE", "server", true);
-            Os.setenv("MOBILEGL_BACKEND_TYPE", "DirectGLES", true);
+            String backend = loadBackend(this);
+            Log.i(TAG, "MobileGL backend: " + backend);
+            Os.setenv("MOBILEGL_BACKEND_TYPE", backend, true);
             Os.setenv("MOBILEGL_LOG_FILE_PATH", getFilesDir() + "/mobilegl-server.log", true);
             Os.unsetenv("MOBILEGL_TRANSPORT");
             Os.unsetenv("MOBILEGL_IPC_SERVER_PATH");

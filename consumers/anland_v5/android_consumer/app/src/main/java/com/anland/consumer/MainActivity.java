@@ -84,6 +84,8 @@ public class MainActivity extends Activity
     // Intent extras (see SecondaryActivity / SettingsActivity); the launcher icon
     // starts MainActivity with none, i.e. the default socket and window name "anland".
     static final String EXTRA_SOCKET_PATH = "socket_path";
+    // "DirectGLES" or "DirectVulkan": the MobileGL backend, saved for the :mobilegl process.
+    static final String EXTRA_MOBILEGL_BACKEND = "mobilegl_backend";
     static final String EXTRA_WINDOW_NAME = "window_name";
     // This window's own native transport instance (its own consumer_state handle).
     private Native mNative;
@@ -553,6 +555,9 @@ public class MainActivity extends Activity
             String name = launch.getStringExtra(EXTRA_WINDOW_NAME);
             if (name != null && !name.trim().isEmpty())
                 mWindowName = name.trim();
+            String backend = launch.getStringExtra(EXTRA_MOBILEGL_BACKEND);
+            if (backend != null && !backend.trim().isEmpty())
+                MobileGLWorker.saveBackend(this, backend.trim());
         }
 
         // Skip opening a duplicate: if another live window already targets this
