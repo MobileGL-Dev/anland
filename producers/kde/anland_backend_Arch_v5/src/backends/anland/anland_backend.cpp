@@ -592,9 +592,7 @@ void AnlandBackend::enterFallback()
         // means nobody can see the desktop. Power the output down like a monitor that is
         // switched off: no compositing into the server's placeholder, no frame callbacks,
         // idle clients. The default framebuffer stays; the reconnect powers it back up.
-        if (!m_outputs.isEmpty()) {
-            m_outputs[0]->setPowerSaving(true);
-        }
+        setViewerPresent(false);
     } else {
         // A frame may be in flight awaiting a buffer-ready that will never come now;
         // fail it so the RenderLoop's frame accounting does not stall.
@@ -677,7 +675,7 @@ void AnlandBackend::onReconnectTimer()
     }
     if (!m_outputs.isEmpty()) {
         if (m_mobileGl) {
-            m_outputs[0]->setPowerSaving(false);
+            setViewerPresent(true);
         } else {
             m_outputs[0]->resumeRendering();
         }
@@ -696,8 +694,29 @@ void AnlandBackend::onReconnectTimer()
 // Foreground scheduling: compositor + focused client
 // ---------------------------------------------------------------------------
 
+void AnlandBackend::setViewerPresent(bool present)
+{
+    // Through the workspace's DPMS state, as a laptop's screen-off does it: the workspace then
+    // switches the output (AnlandOutput::applyChanges -> setPowerSaving) and marks every window
+    // suspended (xdg_toplevel "suspended"), which is what makes clients that draw on their own
+    // clock - a browser on an animated page - stop. Before the workspace exists (KWin starting
+    // with nobody looking) the output alone powers down; setupSchedulingTracking catches up.
+    Workspace *ws = workspace();
+    if (ws) {
+        ws->requestDpmsState(present ? Workspace::DpmsState::On : Workspace::DpmsState::Off);
+    }
+    // Powering down is the workspace's to do once it has one (it waits for the output to report
+    // Off before it settles); powering up is idempotent, so it is done here too.
+    if (!m_outputs.isEmpty() && (present || !ws)) {
+        m_outputs[0]->setPowerSaving(!present);
+    }
+}
+
 void AnlandBackend::setupSchedulingTracking()
 {
+    if (m_mobileGl && m_inFallback) {
+        setViewerPresent(false);
+    }
     if (auto *ws = workspace()) {
         connect(ws, &Workspace::windowActivated, this, [this]() {
             updateActiveScheduling();

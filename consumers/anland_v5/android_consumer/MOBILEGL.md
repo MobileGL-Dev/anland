@@ -63,9 +63,11 @@ up only attaches the window.
 
 The foreground service keeps the server, and with it the session, alive while
 the window is hidden, the screen is off, or the task is swiped away. Whenever
-the Surface is gone the consumer disconnects, and KWin's Anland backend powers
-its output down (DPMS off, RenderLoop inhibited): nothing is composited and
-clients get no frame callbacks until the window is back. "Stop desktop" runs
+the Surface is gone the consumer disconnects, and KWin's Anland backend turns
+the workspace's DPMS off, as a laptop's screen-off does: the output stops
+compositing, windows are marked suspended and get no frame callbacks, and
+MobileGL's Wayland swaps wait for them (an interval-0 client such as Chrome
+drops to about one frame a second), until the window is back. "Stop desktop" runs
 `mobilegl-desktop.sh down` (session and container stopped; the daemon stays),
 closes the windows and ends the `:mobilegl` process.
 
@@ -83,7 +85,8 @@ in-process-server support, including the neutral `EmbeddedServer.h` C ABI
 containing `libMobileGL.so` and any shared runtime dependencies. The library may
 be directly in that directory or under `arm64-v8a/`.
 
-From this directory:
+From this directory (in Git Bash set `MSYS_NO_PATHCONV=1`, or the `/data/...`
+socket below is rewritten into a Windows path; the build refuses that):
 
 ```sh
 MOBILEGL_DIST=/path/to/mobilegl/android-dist \

@@ -115,6 +115,8 @@ private:
     QPointF mapInputDeltaToLogical(const QPointF &deviceDelta) const;
     void onReconnectTimer();
     void enterFallback();
+    /** MobileGL mode: the Anland window is (not) on screen. */
+    void setViewerPresent(bool present);
 
     void onClipboardChanged(bool force = false);
     void sendClipboardToConsumer(const QByteArray &text);

@@ -9,6 +9,7 @@
 #include "anland_egl_backend.h"
 #include "anland_logging.h"
 
+#include "core/outputconfiguration.h"
 #include "core/renderbackend.h" // OutputFrame
 #include "core/renderloop.h"
 
@@ -179,6 +180,20 @@ void AnlandOutput::resumeRendering()
     if (m_renderingInhibited) {
         m_renderLoop->uninhibit();
         m_renderingInhibited = false;
+    }
+}
+
+void AnlandOutput::applyChanges(const OutputConfiguration &config)
+{
+    BackendOutput::applyChanges(config);
+    if (const auto props = config.constChangeSet(this); props && props->dpmsMode) {
+        const bool alreadyThere = m_state.dpmsMode == *props->dpmsMode;
+        setPowerSaving(*props->dpmsMode != DpmsMode::On);
+        // The workspace settles its own DPMS state on this signal; an output that was already
+        // powered down (KWin started with nobody looking) must still give it.
+        if (alreadyThere) {
+            Q_EMIT dpmsModeChanged();
+        }
     }
 }
 

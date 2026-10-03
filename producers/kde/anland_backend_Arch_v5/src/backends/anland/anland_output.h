@@ -80,6 +80,11 @@ public:
      *  powers it back up and repaints. */
     void setPowerSaving(bool saving);
 
+    /** Applies the DPMS mode the workspace asks for (setPowerSaving) on top of the base
+     *  changes: the backend turns the workspace's DPMS off while nobody is looking, so
+     *  KWin's own screen-off handling - suspended windows included - follows. */
+    void applyChanges(const OutputConfiguration &config) override;
+
     /** The primary render layer for this output. Owned by AnlandOutput itself;
      *  created by AnlandEglBackend::addOutput() and handed over via setEglLayer().
      *  Null while no render backend is attached. */
