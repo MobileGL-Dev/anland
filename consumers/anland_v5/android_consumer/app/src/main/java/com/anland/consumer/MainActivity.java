@@ -79,7 +79,9 @@ public class MainActivity extends Activity
     // Camera service fds/threads are created once and persist across reconnects;
     // this guards that one-time init (see applyCameraState).
     private boolean cameraInited = false;
-    private static final String DEFAULT_SOCKET_PATH = "/data/local/tmp/display_daemon.sock";
+    // The build's default daemon socket (gradle property anlandDefaultSocket): the MobileGL
+    // flavour talks to its own daemon, next to the original one.
+    private static final String DEFAULT_SOCKET_PATH = BuildConfig.DEFAULT_SOCKET_PATH;
     // Multi-instance launch parameters. A secondary window is started with these
     // Intent extras (see SecondaryActivity / SettingsActivity); the launcher icon
     // starts MainActivity with none, i.e. the default socket and window name "anland".
@@ -387,6 +389,13 @@ public class MainActivity extends Activity
     // socket is still a live socket. The daemon can go down after launch, so
     // re-check on every (re)connect; if it is gone, report it and exit the window.
     private void startNative(android.view.Surface surface) {
+        if (mAwaitingDaemon) return;
+        if (mobileglEnabled() && !isSocketFile(resolveSocketPath())) {
+            // The MobileGL desktop service starts the daemon itself (MobileGLDesktop.ensureStarted
+            // in onCreate); on a first open it is usually a moment behind this window.
+            awaitDaemon();
+            return;
+        }
         if (!isSocketFile(resolveSocketPath())) {
             android.widget.Toast.makeText(this, "Deamon Down",
                     android.widget.Toast.LENGTH_SHORT).show();
@@ -412,6 +421,49 @@ public class MainActivity extends Activity
             mobileglConnection.detach();
             mNative.start(surface, clipboard, this);
         }
+    }
+
+    /** How long a first open waits for the desktop service to bring the display daemon up. */
+    private static final long DAEMON_WAIT_MS = 20_000L;
+    private volatile boolean mAwaitingDaemon;
+
+    // Polls (off the UI thread) until the daemon socket exists, then starts the pipeline on the
+    // current Surface; gives up like a missing daemon always did.
+    private void awaitDaemon() {
+        if (mAwaitingDaemon) return;
+        mAwaitingDaemon = true;
+        final String path = resolveSocketPath();
+        Thread worker = new Thread(() -> {
+            long deadline = System.currentTimeMillis() + DAEMON_WAIT_MS;
+            boolean present = false;
+            while (!present && System.currentTimeMillis() < deadline && !isFinishing()) {
+                present = Boolean.TRUE.equals(probeSocketRoot(path));
+                if (!present) {
+                    try {
+                        Thread.sleep(300);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            final boolean up = present;
+            runOnUiThread(() -> {
+                mAwaitingDaemon = false;
+                if (isFinishing() || isDestroyed()) return;
+                if (!up) {
+                    android.widget.Toast.makeText(this, "Deamon Down",
+                            android.widget.Toast.LENGTH_SHORT).show();
+                    finish();
+                    return;
+                }
+                Log.i(TAG, "display daemon is up at " + path);
+                if (surfaceReady && !mobileglStarted && surfaceView != null)
+                    startNative(surfaceView.getHolder().getSurface());
+            });
+        }, "anland-daemon-wait");
+        worker.setDaemon(true);
+        worker.start();
     }
 
     private boolean mobileglEnabled() {
@@ -501,7 +553,7 @@ public class MainActivity extends Activity
      * arriving late costs nothing.
      */
     private void probeDaemonAsync() {
-        if (socketProbeInFlight)
+        if (socketProbeInFlight || mAwaitingDaemon)
             return;
         socketProbeInFlight = true;
         final String path = resolveSocketPath();
@@ -560,6 +612,11 @@ public class MainActivity extends Activity
                 MobileGLWorker.saveBackend(this, backend.trim());
         }
 
+        // The MobileGL desktop (server, display daemon, container, Plasma session) comes up with
+        // its first window and stays up after it closes; a reopen only re-confirms it.
+        if (mobileglEnabled())
+            MobileGLDesktop.ensureStarted(this, resolveSocketPath());
+
         // Skip opening a duplicate: if another live window already targets this
         // socket, bring it to the front and drop this (freshly spawned) task.
         MainActivity existing = sWindowsBySocket.get(resolveSocketPath());
@@ -573,8 +630,9 @@ public class MainActivity extends Activity
         // The target must exist AND be a unix-domain socket before we bring up any
         // pipeline. If it is not: a parameter launch has nowhere to fall back to
         // (toast and quit); a plain launcher start bounces to Settings so the user
-        // can fix the path.
-        if (!isSocketFile(resolveSocketPath())) {
+        // can fix the path. The MobileGL desktop starts its daemon itself: startNative
+        // waits for it instead.
+        if (!mobileglEnabled() && !isSocketFile(resolveSocketPath())) {
             if (mSocketOverride != null) {
                 android.widget.Toast.makeText(this, "Socket Not Found",
                         android.widget.Toast.LENGTH_SHORT).show();

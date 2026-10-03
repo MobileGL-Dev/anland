@@ -39,6 +39,41 @@ fallback, which leaves the desktop uncomposted until it does. A changed daemon
 socket, root mode, custom resolution or top-app helper still reconnects, since
 those are fixed when the connection is made.
 
+## Desktop lifecycle
+
+Opening the Anland window is the only thing a user does. `MainActivity` calls
+`MobileGLDesktop.ensureStarted()` - the one place the desktop is started from -
+which starts `MobileGLWorker` as a foreground service (notification "Linux
+desktop is running", action "Stop desktop") and runs the packaged
+`assets/mobilegl-desktop.sh up` as root through `su`. That script is idempotent:
+
+1. display daemon on the window's socket, if none runs (the script leaves the
+   app's process cgroup first, so the daemon and the container outlive the app);
+2. the server's backend published as `backend` next to the socket;
+3. the Droidspaces container (setting "Droidspaces container", default
+   `arch-kde-mgl`), if it is stopped;
+4. `desktop-session.service` in it (enabled, so a fresh container starts it by
+   itself). The session waits until the server listens and the daemon socket
+   exists, copies the published backend into `/etc/mobilegl/backend`, then runs
+   Plasma (`producers/kde/Arch_v5/desktop-session-mobilegl.conf`).
+
+The window waits for the daemon socket instead of bouncing to Settings. The
+server begins serving with the first attached Surface. A reopen with everything
+up only attaches the window.
+
+The foreground service keeps the server, and with it the session, alive while
+the window is hidden, the screen is off, or the task is swiped away. Whenever
+the Surface is gone the consumer disconnects, and KWin's Anland backend powers
+its output down (DPMS off, RenderLoop inhibited): nothing is composited and
+clients get no frame callbacks until the window is back. "Stop desktop" runs
+`mobilegl-desktop.sh down` (session and container stopped; the daemon stays),
+closes the windows and ends the `:mobilegl` process.
+
+The backend is the setting "Renderer backend" (Settings > Connection > MobileGL
+desktop; stored in `files/mobilegl-backend`, also set by the launch extra
+`--es mobilegl_backend DirectVulkan`). The server reads it when its process
+starts, so a change applies after Stop desktop. Nothing starts at phone boot.
+
 ## Build
 
 Use JDK 17, Android SDK platform 36, CMake 3.22.1 and an installed Android NDK.
@@ -54,8 +89,13 @@ From this directory:
 MOBILEGL_DIST=/path/to/mobilegl/android-dist \
 ./gradlew :app:assemblePlainDebug :app:testPlainDebugUnitTest \
   -PanlandNdkVersion=27.2.12479018 \
-  -PmobileglApplicationId=com.anland.consumer.mobilegl
+  -PmobileglApplicationId=com.anland.consumer.mobilegl \
+  -PanlandDefaultSocket=/data/local/tmp/anland-mobilegl/display.sock
 ```
+
+`-PanlandDefaultSocket` is the daemon socket a plain launch (the launcher icon)
+connects to; the MobileGL experiment runs its own display daemon there, next to
+the original one on `/data/local/tmp/display_daemon.sock`.
 
 `-PmobileglDist=/path/to/dist` is equivalent to the environment variable. The
 application ID property is optional; omit it for `com.anland.consumer`. A separate

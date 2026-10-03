@@ -89,6 +89,10 @@ android {
         versionCode gitCommitCount
         versionName "${gitTag}-${gitBuildId}${gitDirty}"
         buildConfigField 'boolean', 'MOBILEGL_BUNDLED', mobileglDist != null ? 'true' : 'false'
+        // The display daemon socket a plain launch connects to. The MobileGL experiment build runs
+        // its own daemon beside the original one: -PanlandDefaultSocket=/data/local/tmp/anland-mobilegl/display.sock
+        buildConfigField 'String', 'DEFAULT_SOCKET_PATH', '"' + providers.gradleProperty('anlandDefaultSocket')
+                .getOrElse('/data/local/tmp/display_daemon.sock') + '"'
 
         ndk {
             abiFilters 'arm64-v8a'

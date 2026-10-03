@@ -26,6 +26,65 @@ ANLAND_SOCKET="${ANLAND_MOBILEGL_SOCKET:-/run/anland-mobilegl/display.sock}"
 if [ -n "${MOBILEGL_ENDPOINT:-}" ]; then
     export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT"
 fi
+# The endpoint every client dials: MOBILEGL_ENDPOINT, else client.conf's MOBILEGL_IPC_CONTROL.
+server_endpoint() {
+    local ep="${MOBILEGL_IPC_CONTROL:-}"
+    if [ -z "$ep" ] && [ -r /etc/mobilegl/client.conf ]; then
+        ep=$(sed -n 's/^[[:space:]]*MOBILEGL_IPC_CONTROL[[:space:]]*=[[:space:]]*//p' /etc/mobilegl/client.conf | tail -n 1)
+    fi
+    printf '%s' "${ep:-unix:@anland-mobilegl}"
+}
+# True once something listens there. The container shares the phone's network namespace, so the
+# Anland app's abstract socket shows in /proc/net/unix (flags 00010000 = listening).
+server_listening() {
+    local ep
+    ep=$(server_endpoint)
+    case "$ep" in
+        unix:*) ep=${ep#unix:} ;;
+        *) return 0 ;;
+    esac
+    awk -v p="$ep" '$4 == "00010000" && $8 == p { found = 1 } END { exit !found }' /proc/net/unix
+}
+
+# The two steps desktop-session.service runs before the session itself. They need none of the
+# desktop user's environment below: sync-backend runs as root.
+case "$MODE" in
+    wait)
+        # The session starts with the container, but KWin may only come up once the Anland app's
+        # MobileGL server listens (it does from the app's first window on) and the display
+        # daemon's socket exists. Until then it waits here instead of failing or rendering
+        # through another GL stack.
+        said=0
+        until server_listening && [ -S "$ANLAND_SOCKET" ]; do
+            if [ "$said" = 0 ]; then
+                echo "waiting for the MobileGL server ($(server_endpoint)) and the display daemon ($ANLAND_SOCKET): open the Anland app"
+                said=1
+            fi
+            sleep 1
+        done
+        echo "MobileGL server and display daemon are up"
+        exit 0
+        ;;
+    sync-backend)
+        # The Anland app publishes the backend its server runs - its setting - next to the daemon
+        # socket before it starts this container. Every client of the session asks the server for
+        # /etc/mobilegl/backend, so the two must agree.
+        published="${MOBILEGL_PUBLISHED_BACKEND:-$(dirname "$ANLAND_SOCKET")/backend}"
+        backend=$(tr -d '[:space:]' < "$published" 2>/dev/null || true)
+        case "$backend" in
+            DirectGLES|DirectVulkan) ;;
+            *) echo "no backend published at $published; /etc/mobilegl/backend stays $(cat /etc/mobilegl/backend 2>/dev/null)"; exit 0 ;;
+        esac
+        if [ "$(tr -d '[:space:]' < /etc/mobilegl/backend 2>/dev/null)" != "$backend" ]; then
+            mkdir -p /etc/mobilegl
+            printf '%s\n' "$backend" > /etc/mobilegl/backend.new
+            mv -f /etc/mobilegl/backend.new /etc/mobilegl/backend
+            echo "/etc/mobilegl/backend -> $backend (the Anland app's setting)"
+        fi
+        exit 0
+        ;;
+esac
+
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 if [ ! -d "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="$HOME/.local/run/anland-$(id -u)"
@@ -115,6 +174,15 @@ case "$MODE" in
         HELPER="$(readlink -f "$0")"
         UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/plasma-kwin_wayland.service.d"
         mkdir -p "$UNIT_DIR"
+        # A Plasma that once saw its GL device vanish (the server died) writes Qt Quick's software
+        # scene graph into kdeglobals and keeps using it in every later session. This session
+        # starts with a server, so drop that choice.
+        kwriteconfig6 --file kdeglobals --group QtQuickRendererSettings --key SceneGraphBackend --delete 2>/dev/null || true
+        # Never another GL stack in this session: with the reachability probe off, MobileGL serves
+        # every process even while the server is briefly away (it waits for it) instead of
+        # declining, so glvnd/libgbm never hand KWin, plasmashell or the apps to the container's
+        # own driver or a software renderer.
+        export MOBILEGL_IPC_PROBE_TIMEOUT_MS=0
         # Only KWin's own needs: transport, endpoint, backend and the EGL/GLX vendor are system-wide.
         ENDPOINT_LINE=""
         if [ -n "${MOBILEGL_IPC_CONTROL:-}" ]; then
@@ -134,6 +202,7 @@ Environment="ANLAND_MOBILEGL=1"
 Environment="ANLAND_SOCKET=$ANLAND_SOCKET"
 Environment="MOBILEGL_IPC_SURFACE=server"
 Environment="MOBILEGL_LOG_FILE_PATH=/tmp/mobilegl-compositor.log"
+Environment="MOBILEGL_IPC_PROBE_TIMEOUT_MS=0"
 $ENDPOINT_LINE
 Environment="KWIN_DISABLE_VULKAN=1"
 Environment="KWIN_NO_TIMER_QUERY=1"
@@ -147,7 +216,7 @@ UNIT
         systemctl --user daemon-reload
         install_chrome_launcher
         # Pushed to every activated client only when it differs from what the library assumes.
-        ACTIVATION_VARS="QT_QPA_PLATFORM"
+        ACTIVATION_VARS="QT_QPA_PLATFORM MOBILEGL_IPC_PROBE_TIMEOUT_MS"
         if [ "$MOBILEGL_DEVICE_DRM_NODE" != /dev/dri/renderD128 ]; then
             export MOBILEGL_DEVICE_DRM_NODE
             ACTIVATION_VARS="$ACTIVATION_VARS MOBILEGL_DEVICE_DRM_NODE"
@@ -159,7 +228,7 @@ UNIT
         exec startplasma-wayland "$@"
         ;;
     *)
-        echo "Usage: $0 [compositor|plasma|chrome] [arguments...]" >&2
+        echo "Usage: $0 [compositor|plasma|chrome|wait|sync-backend] [arguments...]" >&2
         exit 2
         ;;
 esac

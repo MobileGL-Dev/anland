@@ -75,6 +75,16 @@ SCREENCAST=/usr/lib/qt6/plugins/kwin/plugins/screencast.so
 [ -f "$SCREENCAST.orig" ] || cp -a "$SCREENCAST" "$SCREENCAST.orig"
 install -m755 "$BUILD/bin/kwin/plugins/screencast.so" "$SCREENCAST.new" && mv -f "$SCREENCAST.new" "$SCREENCAST"
 install -m755 "$SYNC/misc/mobilegl-startup.sh" /opt/mobilegl/bin/mobilegl-startup.sh
+# The Plasma session: the image's desktop-session.service with the MobileGL drop-in, enabled so the
+# container boots straight into it (the Anland app starts the container when it opens).
+if [ -f "$SYNC/misc/desktop-session-mobilegl.conf" ]; then
+    mkdir -p /etc/systemd/system/desktop-session.service.d
+    D=/etc/systemd/system/desktop-session.service.d/mobilegl.conf
+    [ -f "$D" ] && [ ! -f "$D.orig" ] && cp -a "$D" "$D.orig"
+    install -m644 "$SYNC/misc/desktop-session-mobilegl.conf" "$D"
+    systemctl daemon-reload
+    systemctl enable desktop-session.service
+fi
 
 echo "== installed =="
 ls -la --time-style=full-iso /opt/mobilegl/kwin/bin/kwin_wayland /opt/mobilegl/kwin/lib/

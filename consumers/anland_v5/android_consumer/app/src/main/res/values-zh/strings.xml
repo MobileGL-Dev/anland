@@ -224,4 +224,17 @@
         <item>屏幕 × 0.5</item>
         <item>屏幕 × 0.25</item>
     </string-array>
+    <!-- MobileGL 桌面 -->
+    <string name="section_mobilegl">MobileGL 桌面</string>
+    <string name="mobilegl_backend_label">渲染后端</string>
+    <string-array name="mobilegl_backend_options">
+        <item>Espryt（OpenGL ES，DirectGLES）</item>
+        <item>Magma（Vulkan，DirectVulkan）</item>
+    </string-array>
+    <string name="mobilegl_container_label">Droidspaces 容器</string>
+    <string name="mobilegl_desktop_hint">桌面启动时读取。要让修改生效，请在通知里点“停止桌面”，再重新打开 Anland。</string>
+    <string name="mobilegl_desktop_channel">MobileGL 桌面</string>
+    <string name="mobilegl_desktop_running">Linux 桌面正在运行</string>
+    <string name="mobilegl_desktop_running_text">MobileGL %1$s。Anland 不在屏幕上时暂停。</string>
+    <string name="mobilegl_desktop_stop">停止桌面</string>
 </resources>

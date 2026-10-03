@@ -240,4 +240,17 @@
         <item>Screen × 0.5</item>
         <item>Screen × 0.25</item>
     </string-array>
+    <!-- MobileGL desktop (the bundled MobileGL build) -->
+    <string name="section_mobilegl">MobileGL desktop</string>
+    <string name="mobilegl_backend_label">Renderer backend</string>
+    <string-array name="mobilegl_backend_options">
+        <item>Espryt (OpenGL ES, DirectGLES)</item>
+        <item>Magma (Vulkan, DirectVulkan)</item>
+    </string-array>
+    <string name="mobilegl_container_label">Droidspaces container</string>
+    <string name="mobilegl_desktop_hint">Read when the desktop starts. To apply a change, use Stop desktop in the notification, then open Anland again.</string>
+    <string name="mobilegl_desktop_channel">MobileGL desktop</string>
+    <string name="mobilegl_desktop_running">Linux desktop is running</string>
+    <string name="mobilegl_desktop_running_text">MobileGL %1$s. It pauses while Anland is not on screen.</string>
+    <string name="mobilegl_desktop_stop">Stop desktop</string>
 </resources>

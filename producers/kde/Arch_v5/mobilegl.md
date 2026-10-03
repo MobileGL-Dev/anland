@@ -71,6 +71,19 @@ with `MOBILEGL_IPC_SURFACE=offscreen`: their GL contexts stay offscreen and each
 client presents its Wayland window through the compositor in shared memory.
 Xwayland is launched with `-shm` and without KWin's MobileGL loader settings.
 
+In the supplied image this runs as `desktop-session.service` with the drop-in
+`desktop-session-mobilegl.conf` (installed and enabled by `sync-build-kwin.sh`):
+the container boots straight into it; the session first waits
+(`mobilegl-startup.sh wait`) until the Anland app's MobileGL server listens and
+the display daemon socket exists, then copies the backend the app published into
+`/etc/mobilegl/backend` (`sync-backend`, as root), and it restarts whenever it
+ends. The Anland app starts the container and the session itself when it opens
+(`consumers/anland_v5/android_consumer/MOBILEGL.md`, "Desktop lifecycle"); no
+manual step remains. In plasma mode the helper also deletes Plasma's sticky
+`[QtQuickRendererSettings] SceneGraphBackend` (written after a GPU reset) and
+sets `MOBILEGL_IPC_PROBE_TIMEOUT_MS=0` for the whole session, so MobileGL never
+declines and glvnd never hands KWin or plasmashell to another GL stack.
+
 Plasma mode needs the normal systemd user session. In the supplied Droidspaces
 image, `desktop-session.service` provides this with `User=swung0x48` and
 `PAMName=login`; its `ExecStart` can be overridden to invoke the helper's

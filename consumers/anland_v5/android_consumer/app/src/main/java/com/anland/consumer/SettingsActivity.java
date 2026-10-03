@@ -77,7 +77,7 @@ public class SettingsActivity extends Activity {
     private static final String KEY_NOTIFICATION_ENABLED = "settings_notification";
     private static final String KEY_ORIENTATION = "screen_orientation";
     private static final String[] ORIENTATION_VALUES = {"default", "landscape", "portrait"};
-    private static final String DEFAULT_SOCKET_PATH = "/data/local/tmp/display_daemon.sock";
+    private static final String DEFAULT_SOCKET_PATH = BuildConfig.DEFAULT_SOCKET_PATH;
     private static final int UNBOUND = -1;
 
     // ===== 新增：触摸板 Key =====
@@ -327,6 +327,8 @@ public class SettingsActivity extends Activity {
         currentPage = Page.CONNECTION;
         LinearLayout root = newPage(R.string.section_connection);
         addConnectionSection(root);
+        if (BuildConfig.MOBILEGL_BUNDLED)
+            addMobileGLSection(root);
         setContent(root);
     }
 
@@ -1348,6 +1350,68 @@ public class SettingsActivity extends Activity {
             hint.setPadding(0, dp(2), 0, dp(12));
             root.addView(hint);
         }
+    }
+
+    // The MobileGL desktop: which backend the embedded server runs (Espryt = DirectGLES,
+    // Magma = DirectVulkan; the container's clients follow it) and which Droidspaces container
+    // holds the Plasma session. Both are read when the desktop starts.
+    private static final String[] MOBILEGL_BACKENDS = {"DirectGLES", "DirectVulkan"};
+
+    private void addMobileGLSection(LinearLayout root) {
+        addSectionHeader(root, R.string.section_mobilegl, dp(24));
+
+        TextView backendLabel = new TextView(this);
+        backendLabel.setText(R.string.mobilegl_backend_label);
+        backendLabel.setTextSize(14);
+        backendLabel.setTextColor(Color.GRAY);
+        backendLabel.setPadding(0, 0, 0, dp(4));
+        root.addView(backendLabel);
+
+        Spinner backendPicker = new Spinner(this);
+        backendPicker.setAdapter(new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_dropdown_item,
+            getResources().getStringArray(R.array.mobilegl_backend_options)));
+        String current = MobileGLWorker.loadBackend(this);
+        for (int i = 0; i < MOBILEGL_BACKENDS.length; i++)
+            if (MOBILEGL_BACKENDS[i].equals(current)) backendPicker.setSelection(i);
+        backendPicker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View v, int pos, long id) {
+                MobileGLWorker.saveBackend(SettingsActivity.this, MOBILEGL_BACKENDS[pos]);
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        root.addView(backendPicker);
+
+        TextView containerLabel = new TextView(this);
+        containerLabel.setText(R.string.mobilegl_container_label);
+        containerLabel.setTextSize(14);
+        containerLabel.setTextColor(Color.GRAY);
+        containerLabel.setPadding(0, dp(16), 0, dp(4));
+        root.addView(containerLabel);
+
+        EditText containerInput = new EditText(this);
+        containerInput.setSingleLine(true);
+        containerInput.setHint(DesktopCommand.DEFAULT_CONTAINER);
+        containerInput.setText(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getString(MobileGLDesktop.KEY_CONTAINER, DesktopCommand.DEFAULT_CONTAINER));
+        containerInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(Editable s) {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(MobileGLDesktop.KEY_CONTAINER, s.toString().trim()).apply();
+            }
+        });
+        root.addView(containerInput);
+
+        TextView hint = new TextView(this);
+        hint.setText(R.string.mobilegl_desktop_hint);
+        hint.setTextSize(12);
+        hint.setTextColor(Color.GRAY);
+        hint.setPadding(0, dp(2), 0, dp(12));
+        root.addView(hint);
     }
 
     // Connection settings: a custom daemon socket path and a "connect with root"
