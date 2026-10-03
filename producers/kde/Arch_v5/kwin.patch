@@ -430,27 +430,42 @@ diff --git a/src/xwayland/xwaylandlauncher.cpp b/src/xwayland/xwaylandlauncher.c
 index 7ebdecf..2e39d15 100644
 --- a/src/xwayland/xwaylandlauncher.cpp
 +++ b/src/xwayland/xwaylandlauncher.cpp
-@@ -177,6 +177,24 @@ bool XwaylandLauncher::start()
+@@ -177,6 +177,39 @@ bool XwaylandLauncher::start()
      arguments << QStringLiteral("-rootless");
  
      QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
 +    if (qEnvironmentVariableIntValue("ANLAND_MOBILEGL") == 1) {
-+        // The compositor's split session owns its Android Surface. Xwayland
-+        // submits shm buffers; it must not consume the same session or claim
-+        // GBM/dma-buf support from the MobileGL EGL facade.
-+        arguments << QStringLiteral("-shm");
++        // The compositor's split session owns its Android Surface; Xwayland is
++        // a MobileGL client of its own. With glamor it draws through MobileGL's
++        // EGL and GBM backend (GBM_BACKEND=mobilegl) as an offscreen session,
++        // and its window pixmaps reach us as linux-dmabuf buffers of the same
++        // server images. ANLAND_XWAYLAND_GLAMOR=0 keeps the software path
++        // (-shm on llvmpipe); a glamor that cannot start falls back to shm by
++        // itself.
 +        env.remove("LD_LIBRARY_PATH");
 +        env.remove("LD_PRELOAD");
 +        env.remove("__EGL_VENDOR_LIBRARY_FILENAMES");
-+        env.remove("MOBILEGL_IPC_CONTROL");
-+        env.remove("MOBILEGL_IPC_SURFACE");
 +        env.remove("MESA_LOADER_DRIVER_OVERRIDE");
-+        // GBM_BACKEND names MobileGL's GBM backend, whose buffers only
-+        // MobileGL's EGL can draw with; the software stack picks its own.
-+        env.remove("GBM_BACKEND");
 +        env.remove("ANLAND_MOBILEGL");
-+        env.insert("LIBGL_ALWAYS_SOFTWARE", QStringLiteral("1"));
-+        env.insert("GALLIUM_DRIVER", QStringLiteral("llvmpipe"));
++        // An X server never needs DISPLAY, and one naming the server itself
++        // must not reach a GL library that could dial it.
++        env.remove("DISPLAY");
++        if (qEnvironmentVariable("ANLAND_XWAYLAND_GLAMOR") != QLatin1String("0")) {
++            env.insert("MOBILEGL_IPC_SURFACE", QStringLiteral("offscreen"));
++            env.insert("MOBILEGL_LOG_FILE_PATH", QStringLiteral("/tmp/mgl-xwayland"));
++            env.insert("GBM_BACKEND", QStringLiteral("mobilegl"));
++            env.remove("LIBGL_ALWAYS_SOFTWARE");
++            env.remove("GALLIUM_DRIVER");
++        } else {
++            arguments << QStringLiteral("-shm");
++            env.remove("MOBILEGL_IPC_CONTROL");
++            env.remove("MOBILEGL_IPC_SURFACE");
++            // GBM_BACKEND names MobileGL's GBM backend, whose buffers only
++            // MobileGL's EGL can draw with; the software stack picks its own.
++            env.remove("GBM_BACKEND");
++            env.insert("LIBGL_ALWAYS_SOFTWARE", QStringLiteral("1"));
++            env.insert("GALLIUM_DRIVER", QStringLiteral("llvmpipe"));
++        }
 +    }
  
      env.insert("WAYLAND_SOCKET", QByteArray::number(waylandSocket.get()));

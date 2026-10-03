@@ -211,6 +211,10 @@ Environment="KWIN_DISABLE_UDMABUF_IMPORT=1"
 Environment="GBM_BACKEND=mobilegl"
 Environment="MOBILEGL_GBM_NODE=$MOBILEGL_GBM_NODE"
 Environment="MOBILEGL_DEVICE_DRM_NODE=$MOBILEGL_DEVICE_DRM_NODE"
+# Xwayland draws with glamor on MobileGL (an offscreen session of its own, window pixmaps handed
+# over as dma-bufs); 0 = the old software Xwayland (-shm on llvmpipe). Glamor needs
+# MOBILEGL_GBM_NODE to be a real render node: with /dev/null Xwayland falls back to shm itself.
+Environment="ANLAND_XWAYLAND_GLAMOR=${ANLAND_XWAYLAND_GLAMOR:-1}"
 Environment="QT_LOGGING_RULES=kwin_*.info=true"
 UNIT
         systemctl --user daemon-reload
