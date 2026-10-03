@@ -137,34 +137,38 @@ install_chrome_launcher() {
 
 case "$MODE" in
     chrome)
-        # ANGLE's GLES-on-EGL backend over the system EGL, which is MobileGL's vendor. With the GPU
-        # in the browser process Chrome draws into wl_egl_windows on its own Wayland connection,
-        # which MobileGL presents as linux-dmabuf buffers backed by server images - no readback.
-        # It is pointed at no render node so it keeps that path rather than allocating its own
-        # GBM scanout buffers. On
-        # that path Chrome never sends its fractional-scale viewport, so on this scale-2 output
-        # the window would show at twice its size; with integer scaling it sends
-        # wl_surface.set_buffer_scale, which the frames MobileGL attaches then carry.
+        # ANGLE's GLES-on-EGL backend over the system EGL, which is MobileGL's vendor.
         #
-        # MOBILEGL_CHROME_GPU=process runs the GPU in its own process instead, which is what lets
-        # Chrome survive a GPU device loss: ANGLE's GLES-on-EGL backend renders every Chrome
-        # context through ONE native context it creates when its EGL display initializes, and
-        # never makes another while that display lives - so after a loss the in-process GPU keeps
-        # re-binding the lost context. Chrome's answer to a lost ANGLE context is to restart the
-        # GPU process (a new ANGLE display, a new MobileGL session), which it cannot do in-process.
+        # The GPU runs in its own process (the default; MOBILEGL_CHROME_GPU=in-process opts out),
+        # because that is what lets Chrome survive a GPU device loss: ANGLE's GLES-on-EGL backend
+        # renders every Chrome context through ONE native context it creates when its EGL display
+        # initializes and never makes another while that display lives, so a lost context can only
+        # be replaced by a new GPU process - which Chrome starts once its context reports the
+        # reset (EGL_EXT_create_context_robustness), and cannot do with the GPU in the browser.
         # The GPU process presents through GBM dma-bufs: libgbm loads mobilegl_gbm (GBM_BACKEND,
         # set system-wide) on the session's render node, whose buffers are MobileGL server images
-        # that KWin imports. Its sandbox stays off (MOBILEGL_CHROME_GPU_SANDBOX=on keeps it, to
-        # try): it starts after GL is up and from then on refuses the GPU process any socket() or
-        # connect() - a second connection to the server's endpoint - and files it was not
-        # brokered, MobileGL's config and log among them. That is no worse than in-process, where
-        # the same GPU code runs unsandboxed inside the browser.
+        # that the browser hands KWin over linux-dmabuf. ANGLE binds those images
+        # (GL_OES_EGL_image) only over a native driver that calls itself OpenGL ES, which
+        # MobileGL's ES contexts do with MOBILEGL_ES_CONTEXT_IDENTITY=1. Its sandbox stays off
+        # (MOBILEGL_CHROME_GPU_SANDBOX=on keeps it, to try): it starts after GL is up and from then
+        # on refuses the GPU process any socket() or connect() - a second connection to the
+        # server's endpoint - and files it was not brokered, MobileGL's config and log among them.
+        # That is no worse than in-process, where the same GPU code runs unsandboxed inside the
+        # browser.
+        #
+        # In-process, Chrome draws into wl_egl_windows on its own Wayland connection, which
+        # MobileGL presents as linux-dmabuf buffers backed by server images, and it is pointed at
+        # no render node so it keeps that path rather than allocating GBM scanout buffers.
+        #
+        # Either way Chrome does not send its fractional-scale viewport on this scale-2 output, so
+        # the window would show at twice its size; with integer scaling it sends
+        # wl_surface.set_buffer_scale instead.
         export MOBILEGL_IPC_SURFACE=offscreen
-        if [ "${MOBILEGL_CHROME_GPU:-in-process}" = process ]; then
+        if [ "${MOBILEGL_CHROME_GPU:-process}" = process ]; then
             if [ "$MOBILEGL_GBM_NODE" = /dev/null ]; then
-                echo "MOBILEGL_CHROME_GPU=process needs a render node for GBM; running the GPU in-process" >&2
+                echo "the Chrome GPU process needs a render node for GBM; running the GPU in-process" >&2
             else
-                export GBM_BACKEND=mobilegl MOBILEGL_GBM_NODE MOBILEGL_DEVICE_DRM_NODE
+                export GBM_BACKEND=mobilegl MOBILEGL_GBM_NODE MOBILEGL_DEVICE_DRM_NODE MOBILEGL_ES_CONTEXT_IDENTITY=1
                 sandbox=--disable-gpu-sandbox
                 [ "${MOBILEGL_CHROME_GPU_SANDBOX:-off}" = on ] && sandbox=
                 exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
