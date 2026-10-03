@@ -1,22 +1,31 @@
 #!/bin/bash
 # Run the MobileGL session, or install the KWin user service override and start
-# a complete Plasma session. Every client dials the same embedded endpoint.
-# Run as the container's desktop user.
+# a complete Plasma session. Run as the container's desktop user.
+#
+# MobileGL is the container's system-wide GL vendor, so nothing here selects it per process:
+#   /usr/share/glvnd/egl_vendor.d/10_mobilegl.json  EGL (sorts ahead of the system's own vendor,
+#                                                   which serves whenever MobileGL declines)
+#   /etc/mobilegl/client.conf + /etc/mobilegl/backend  transport, endpoint and backend
+#   /etc/environment.d/10-mobilegl.conf, /etc/profile.d/mobilegl.sh  GLX vendor name + GBM backend
+# (installed by anland-build-client.sh or MobileGL's xdeploy.sh). What stays here is what only
+# KWin needs: its own build, the server-owned surface, the anland backend and its GBM node.
 set -euo pipefail
 
 MODE="${1:-compositor}"
 if [ "$#" -gt 0 ]; then shift; fi
 KWIN_BIN="${KWIN_BIN:-/opt/mobilegl/kwin/bin/kwin_wayland}"
 KWIN_LIB_DIR="${KWIN_LIB_DIR:-/opt/mobilegl/kwin/lib}"
-MOBILEGL_VENDOR_JSON="${MOBILEGL_VENDOR_JSON:-/opt/mobilegl/share/glvnd/egl_vendor.d/50_mobilegl.json}"
-# This launcher serves the MobileGL experiment only. /etc/environment leaks a
-# Mesa-baseline ANLAND_SOCKET into the login session through pam_env, which
+MOBILEGL_VENDOR_JSON="${MOBILEGL_VENDOR_JSON:-/usr/share/glvnd/egl_vendor.d/10_mobilegl.json}"
+# This launcher serves the MobileGL experiment only. /etc/environment leaks the
+# baseline session's ANLAND_SOCKET into the login session through pam_env, which
 # would silently override the systemd drop-in; the experiment's daemon socket
 # is therefore the default here, not /run/display.sock.
 ANLAND_SOCKET="${ANLAND_MOBILEGL_SOCKET:-/run/anland-mobilegl/display.sock}"
-# One endpoint for every client. The embedded server in the Anland APK owns the
-# session schedule; the launcher only points clients at it.
-MOBILEGL_ENDPOINT="${MOBILEGL_ENDPOINT:-unix:@anland-mobilegl}"
+# The endpoint every client dials is client.conf's (unix:@anland-mobilegl). MOBILEGL_ENDPOINT
+# overrides it for this session only.
+if [ -n "${MOBILEGL_ENDPOINT:-}" ]; then
+    export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT"
+fi
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 if [ ! -d "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="$HOME/.local/run/anland-$(id -u)"
@@ -26,31 +35,19 @@ fi
 if [ -S "$XDG_RUNTIME_DIR/bus" ]; then
     export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 fi
-export __EGL_VENDOR_LIBRARY_FILENAMES="$MOBILEGL_VENDOR_JSON"
-# X11 clients (through Xwayland) take GLX from glvnd's libGLX, which would load the vendor
-# Xwayland names (Mesa, which wants a GPU device the container's clients cannot use).
-# libGLX_mobilegl.so.0 is installed by anland-build-client.sh.
-export __GLX_VENDOR_LIBRARY_NAME=mobilegl
-export MOBILEGL_TRANSPORT=spawn MOBILEGL_IPC_DATA=shm
-# The backend every client asks the embedded server for: DirectGLES or DirectVulkan. The
-# server serves one backend per process and refuses a client that asks for the other, so it
-# must match the Anland app's choice (`--es mobilegl_backend`, or on a debuggable build
-# `setprop debug.mobilegl.backend`). Kept in /etc/mobilegl/backend; DirectGLES when absent.
-MOBILEGL_BACKEND_FILE="${MOBILEGL_BACKEND_FILE:-/etc/mobilegl/backend}"
-if [ -z "${MOBILEGL_BACKEND_TYPE:-}" ] && [ -r "$MOBILEGL_BACKEND_FILE" ]; then
-    MOBILEGL_BACKEND_TYPE="$(tr -d '[:space:]' < "$MOBILEGL_BACKEND_FILE")"
-fi
-export MOBILEGL_BACKEND_TYPE="${MOBILEGL_BACKEND_TYPE:-DirectGLES}"
+# The backend every client asks the embedded server for (DirectGLES or DirectVulkan) is
+# /etc/mobilegl/backend, which the library reads itself; it must match the Anland app's choice
+# (`--es mobilegl_backend`, or on a debuggable build `setprop debug.mobilegl.backend`).
 export KWIN_DISABLE_VULKAN=1 KWIN_NO_TIMER_QUERY=1 KWIN_PERSISTENT_VBO=0
 # KWin now has a DRM device (below), and with one it turns wl_shm buffers into udmabufs and
 # imports them through EGL; MobileGL's EGL only imports images its server allocated, so that
 # import would fail per buffer. Keep it off.
 export KWIN_DISABLE_UDMABUF_IMPORT=1
-# GBM: libgbm loads /usr/lib/gbm/mobilegl_gbm.so (installed by anland-build-client.sh), whose
-# buffers are MobileGL server images. Its device node is only an identity - the backend never
-# issues an ioctl on it - so the first render node this user can open is borrowed, else
-# /dev/null. MobileGL's EGL device reports the same node, so KWin's dma-buf feedback names one
-# device throughout.
+# KWin's GBM device: libgbm loads /usr/lib/gbm/mobilegl_gbm.so (GBM_BACKEND=mobilegl, set
+# system-wide), whose buffers are MobileGL server images. Its device node is only an identity -
+# the backend never issues an ioctl on it - so the first render node this user can open is
+# borrowed, else /dev/null. MobileGL's EGL device reports the same node (MOBILEGL_DEVICE_DRM_NODE,
+# whose default is the first render node), so KWin's dma-buf feedback names one device throughout.
 if [ -z "${MOBILEGL_GBM_NODE:-}" ]; then
     MOBILEGL_GBM_NODE=/dev/null
     for node in /dev/dri/renderD*; do
@@ -60,8 +57,7 @@ if [ -z "${MOBILEGL_GBM_NODE:-}" ]; then
         fi
     done
 fi
-export GBM_BACKEND=mobilegl MOBILEGL_GBM_NODE
-export MOBILEGL_DEVICE_DRM_NODE="${MOBILEGL_DEVICE_DRM_NODE:-$MOBILEGL_GBM_NODE}"
+MOBILEGL_DEVICE_DRM_NODE="${MOBILEGL_DEVICE_DRM_NODE:-$MOBILEGL_GBM_NODE}"
 unset MESA_LOADER_DRIVER_OVERRIDE GALLIUM_DRIVER FD_FORCE_KGSL ANLAND_DRM_DEVICE
 unset XWAYLAND_GBM_DEVICE ANLAND_SKIP_IMPLICIT_SYNC_WAIT
 
@@ -90,7 +86,7 @@ case "$MODE" in
         # that path Chrome never sends its fractional-scale viewport, so on this scale-2 output
         # the window would show at twice its size; with integer scaling it sends
         # wl_surface.set_buffer_scale, which the frames MobileGL attaches then carry.
-        export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT" MOBILEGL_IPC_SURFACE=offscreen
+        export MOBILEGL_IPC_SURFACE=offscreen
         exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
             --in-process-gpu --ignore-gpu-blocklist \
             --render-node-override=/dev/dri/mobilegl-no-render-node \
@@ -104,22 +100,27 @@ case "$MODE" in
         # journal, MobileGL's diagnostics go here.
         export MOBILEGL_LOG_FILE_PATH="${MOBILEGL_LOG_FILE_PATH:-/tmp/mobilegl-compositor.log}"
         # This directory contains the rebuilt KWin library, without EGL/GL
-        # aliases; EGL selection still goes through the GLVND vendor JSON.
+        # aliases; EGL selection goes through the system glvnd vendor JSON.
         export LD_LIBRARY_PATH="$KWIN_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT"
+        # The compositor alone owns the server's Android Surface.
         export MOBILEGL_IPC_SURFACE=server
+        export GBM_BACKEND=mobilegl MOBILEGL_GBM_NODE MOBILEGL_DEVICE_DRM_NODE
         exec "$KWIN_BIN" --anland --xwayland "$@"
         ;;
     plasma)
-        # Same endpoint as the compositor: clients render offscreen and present
-        # through KWin, which keeps the Android Surface itself.
-        export MOBILEGL_IPC_CONTROL="$MOBILEGL_ENDPOINT"
-        export MOBILEGL_IPC_SURFACE=offscreen QT_QPA_PLATFORM=wayland
+        # Clients render offscreen (the library's default) and present through KWin, which keeps
+        # the Android Surface itself.
+        export QT_QPA_PLATFORM=wayland
         unset ANLAND_MOBILEGL
         HELPER="$(readlink -f "$0")"
         UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/plasma-kwin_wayland.service.d"
         mkdir -p "$UNIT_DIR"
-        cat > "$UNIT_DIR/mobilegl.conf" <<EOF
+        # Only KWin's own needs: transport, endpoint, backend and the EGL/GLX vendor are system-wide.
+        ENDPOINT_LINE=""
+        if [ -n "${MOBILEGL_IPC_CONTROL:-}" ]; then
+            ENDPOINT_LINE="Environment=\"MOBILEGL_IPC_CONTROL=$MOBILEGL_IPC_CONTROL\""
+        fi
+        cat > "$UNIT_DIR/mobilegl.conf" <<UNIT
 [Service]
 # The unit has BusName=org.kde.KWinWrapper: the compositor must come up
 # through kwin_wayland_wrapper (it registers the name) or the service never
@@ -129,15 +130,11 @@ ExecStart=
 ExecStart=/usr/bin/kwin_wayland_wrapper --xwayland
 Environment="PATH=/opt/mobilegl/kwin/bin:/usr/local/bin:/usr/bin"
 Environment="LD_LIBRARY_PATH=$KWIN_LIB_DIR"
-Environment="__EGL_VENDOR_LIBRARY_FILENAMES=$MOBILEGL_VENDOR_JSON"
 Environment="ANLAND_MOBILEGL=1"
 Environment="ANLAND_SOCKET=$ANLAND_SOCKET"
-Environment="MOBILEGL_TRANSPORT=spawn"
-Environment="MOBILEGL_BACKEND_TYPE=$MOBILEGL_BACKEND_TYPE"
-Environment="MOBILEGL_IPC_DATA=shm"
-Environment="MOBILEGL_IPC_CONTROL=$MOBILEGL_ENDPOINT"
 Environment="MOBILEGL_IPC_SURFACE=server"
 Environment="MOBILEGL_LOG_FILE_PATH=/tmp/mobilegl-compositor.log"
+$ENDPOINT_LINE
 Environment="KWIN_DISABLE_VULKAN=1"
 Environment="KWIN_NO_TIMER_QUERY=1"
 Environment="KWIN_PERSISTENT_VBO=0"
@@ -146,10 +143,19 @@ Environment="GBM_BACKEND=mobilegl"
 Environment="MOBILEGL_GBM_NODE=$MOBILEGL_GBM_NODE"
 Environment="MOBILEGL_DEVICE_DRM_NODE=$MOBILEGL_DEVICE_DRM_NODE"
 Environment="QT_LOGGING_RULES=kwin_*.info=true"
-EOF
+UNIT
         systemctl --user daemon-reload
         install_chrome_launcher
-        dbus-update-activation-environment --systemd __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME MOBILEGL_TRANSPORT MOBILEGL_BACKEND_TYPE MOBILEGL_IPC_DATA MOBILEGL_IPC_CONTROL MOBILEGL_IPC_SURFACE QT_QPA_PLATFORM GBM_BACKEND MOBILEGL_GBM_NODE MOBILEGL_DEVICE_DRM_NODE
+        # Pushed to every activated client only when it differs from what the library assumes.
+        ACTIVATION_VARS="QT_QPA_PLATFORM"
+        if [ "$MOBILEGL_DEVICE_DRM_NODE" != /dev/dri/renderD128 ]; then
+            export MOBILEGL_DEVICE_DRM_NODE
+            ACTIVATION_VARS="$ACTIVATION_VARS MOBILEGL_DEVICE_DRM_NODE"
+        fi
+        if [ -n "${MOBILEGL_IPC_CONTROL:-}" ]; then
+            ACTIVATION_VARS="$ACTIVATION_VARS MOBILEGL_IPC_CONTROL"
+        fi
+        dbus-update-activation-environment --systemd $ACTIVATION_VARS
         exec startplasma-wayland "$@"
         ;;
     *)
