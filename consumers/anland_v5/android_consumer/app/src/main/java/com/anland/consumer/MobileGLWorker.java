@@ -109,6 +109,11 @@ public final class MobileGLWorker extends Service {
             // Configure before dlopen: MobileGL chooses its process role at load.
             Os.setenv("MOBILEGL_IPC_DIAL", "no", true);
             Os.setenv("MOBILEGL_IPC_ROLE", "server", true);
+            // The window the app hands this process over Binder is the one every client's window
+            // surface is served on (MOBILEGL_IPC_SURFACE's "server" mode). IpcSurface defaults to
+            // Offscreen, so without this the server keeps the window attached and never swaps into
+            // it: the clients composite zero-copy into buffers nothing ever shows.
+            Os.setenv("MOBILEGL_IPC_SURFACE", "server", true);
             backend = loadBackend(this);
             Log.i(TAG, "MobileGL backend: " + backend);
             Os.setenv("MOBILEGL_BACKEND_TYPE", backend, true);
