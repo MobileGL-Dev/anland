@@ -182,6 +182,23 @@ void AnlandOutput::resumeRendering()
     }
 }
 
+void AnlandOutput::setPowerSaving(bool saving)
+{
+    const DpmsMode mode = saving ? DpmsMode::Off : DpmsMode::On;
+    if (m_state.dpmsMode != mode) {
+        State next = m_state;
+        next.dpmsMode = mode;
+        setState(next);
+        qCInfo(KWIN_ANLAND) << (saving ? "viewer gone: output powered down" : "viewer back: output powered up");
+    }
+    if (saving) {
+        stopRendering();
+    } else {
+        resumeRendering();
+        m_renderLoop->scheduleRepaint();
+    }
+}
+
 } // namespace KWin
 
 #include "moc_anland_output.cpp"

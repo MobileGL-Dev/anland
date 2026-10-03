@@ -586,14 +586,14 @@ void AnlandBackend::enterFallback()
 
     if (m_mobileGl) {
         // MobileGL has no consumer-owned images to lose: the compositor owns the EGL
-        // window and swaps into it directly, so the consumer is only the fd/pacing peer
-        // (frame acknowledgement, input, clipboard, scheduling). Stopping the RenderLoop
-        // or dropping the default framebuffer here would leave the desktop uncomposted
-        // for as long as the consumer is away, and the reconnect timer alone cannot
-        // revive it: try_exit_fallback() still needs the consumer's fd deposit. So keep
-        // drawing, and only fail the frame that the missing acknowledgement stranded.
+        // window and swaps into it directly. The Anland app stops its consumer only when
+        // its Surface is gone (app in the background, screen off or locked, app closed)
+        // and deposits a fresh fd set with the next Surface, so a consumer that is away
+        // means nobody can see the desktop. Power the output down like a monitor that is
+        // switched off: no compositing into the server's placeholder, no frame callbacks,
+        // idle clients. The default framebuffer stays; the reconnect powers it back up.
         if (!m_outputs.isEmpty()) {
-            m_outputs[0]->failPendingFrame();
+            m_outputs[0]->setPowerSaving(true);
         }
     } else {
         // A frame may be in flight awaiting a buffer-ready that will never come now;
@@ -676,7 +676,11 @@ void AnlandBackend::onReconnectTimer()
         return;
     }
     if (!m_outputs.isEmpty()) {
-        m_outputs[0]->resumeRendering();
+        if (m_mobileGl) {
+            m_outputs[0]->setPowerSaving(false);
+        } else {
+            m_outputs[0]->resumeRendering();
+        }
     }
     if (layer) {
         layer->addDeviceRepaint(Region::infinite());

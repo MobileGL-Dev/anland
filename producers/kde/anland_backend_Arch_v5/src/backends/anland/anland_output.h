@@ -61,8 +61,7 @@ public:
 
     /** Give up on a frame that was handed to the consumer and never acknowledged:
      *  the RenderLoop's accounting must not wait for a buffer-ready that will never
-     *  come. MobileGL mode calls this on fallback without inhibiting the RenderLoop,
-     *  because there the EGL surface is the compositor's own, not the consumer's. */
+     *  come. */
     void failPendingFrame();
 
     /** Consumer went away (fallback): fail any in-flight frame and inhibit() the
@@ -72,6 +71,14 @@ public:
 
     /** Consumer reconnected: uninhibit() the RenderLoop so compositing resumes. */
     void resumeRendering();
+
+    /** MobileGL mode: nobody is looking. The consumer goes away exactly when the Anland
+     *  window is not on screen (app in the background, screen off or locked, app closed),
+     *  so the output then behaves like a monitor that was switched off: it reports DPMS
+     *  Off and its RenderLoop stops, which means no compositing, no swaps into the
+     *  server's placeholder and no frame callbacks, so clients idle too. @p saving false
+     *  powers it back up and repaints. */
+    void setPowerSaving(bool saving);
 
     /** The primary render layer for this output. Owned by AnlandOutput itself;
      *  created by AnlandEglBackend::addOutput() and handed over via setEglLayer().
