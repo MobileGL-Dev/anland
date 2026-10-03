@@ -650,10 +650,15 @@ public class MainActivity extends Activity
         mNative = new Native();
         mobileglConnection = new MobileGLConnection(this, (width, height) -> {
             if (surfaceView == null || !surfaceReady) return;
-            if (width > 0 && height > 0)
+            if (width > 0 && height > 0) {
                 surfaceView.getHolder().setFixedSize(width, height);
-            else
+            } else if (surfaceView.getWidth() > 0 && surfaceView.getHeight() > 0) {
+                // "no extent asked for": go back to the layout. Only when the view HAS one - a
+                // request that arrives before the first layout would otherwise fix the surface at
+                // 0x0, and a producer on a 0x0 surface can never queue: every eglSwapBuffers on it
+                // fails from then on and the desktop stays black.
                 surfaceView.getHolder().setSizeFromLayout();
+            }
         });
         setTaskDescription(new ActivityManager.TaskDescription(mWindowName));
 
