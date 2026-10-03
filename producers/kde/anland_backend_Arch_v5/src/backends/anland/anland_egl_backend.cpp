@@ -32,6 +32,9 @@
 namespace KWin
 {
 
+// How many EGL backends have initialized in this process (see AnlandEglBackend::init).
+static int s_initializedBackends = 0;
+
 static uint32_t protocol_format_to_drm(uint32_t fmt)
 {
     switch (fmt) {
@@ -351,9 +354,16 @@ bool AnlandEglLayer::doEndFrame(const Region &renderedDeviceRegion, const Region
     }
     if (m_backend->backend()->usesMobileGl()) {
         const bool swapped = mobileGlSwap(renderedDeviceRegion, damagedDeviceRegion);
+        const EGLint error = swapped ? EGL_SUCCESS : eglGetError();
         set_render_fence(m_display, -1);
-        if (!swapped) {
-            qCWarning(KWIN_ANLAND) << "MobileGL swap failed" << Qt::hex << eglGetError();
+        if (error == EGL_CONTEXT_LOST) {
+            // MobileGL lost this compositor's session (a device loss on the server). The next
+            // frame's reset check (EglBackend::checkGraphicsReset) restarts compositing on
+            // contexts of a fresh session, so that frame has to come even on an idle desktop.
+            qCWarning(KWIN_ANLAND) << "MobileGL swap failed: the session is lost; compositing restarts on a fresh one";
+            addDeviceRepaint(Region::infinite());
+        } else if (!swapped) {
+            qCWarning(KWIN_ANLAND) << "MobileGL swap failed" << Qt::hex << error;
         }
         return swapped;
     }
@@ -446,6 +456,16 @@ bool AnlandEglBackend::init()
     if (!createContext()) {
         qCWarning(KWIN_ANLAND) << "Could not initialize rendering context";
         return false;
+    }
+
+    // A backend after the first is compositing restarted, which KWin does when its context reports
+    // a reset: under MobileGL, this compositor's session was lost and the context just created is
+    // on a fresh one (its window surface follows at the first make-current). The images imported
+    // from clients' buffers were the lost session's, so they are dropped and each buffer is
+    // imported again when it is next drawn; the clients' images live in their own sessions.
+    if (s_initializedBackends++ > 0 && m_backend->usesMobileGl()) {
+        qCInfo(KWIN_ANLAND) << "compositing restarted on a fresh MobileGL session; client buffers are imported again";
+        eglDisplayObject()->dropImportedImages();
     }
 
     initWayland();

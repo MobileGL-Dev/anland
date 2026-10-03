@@ -253,10 +253,23 @@ index 70432da..cce4cb4 100644
          a.setSession(KWin::Session::create());
          if (!a.session()) {
 diff --git a/src/opengl/eglbackend.cpp b/src/opengl/eglbackend.cpp
-index 75c7e73..0b21d74 100644
 --- a/src/opengl/eglbackend.cpp
 +++ b/src/opengl/eglbackend.cpp
-@@ -122,7 +122,16 @@ void EglBackend::initWayland()
+@@ -71,6 +71,13 @@ bool EglBackend::checkGraphicsReset()
+         break;
+     }
+ 
++    // anland's MobileGL session: a context of a lost session stays lost (its reset status never
++    // returns to GL_NO_ERROR), and there is no reset in progress to wait for - the recovery is
++    // the new context the restart creates, which comes up on a fresh session.
++    if (qEnvironmentVariableIntValue("ANLAND_MOBILEGL") == 1) {
++        return true;
++    }
++
+     QElapsedTimer timer;
+     timer.start();
+ 
+@@ -122,7 +129,16 @@ void EglBackend::initWayland()
          return;
      }
      DrmDevice *scanoutDevice = drmDevice();
@@ -275,10 +288,9 @@ index 75c7e73..0b21d74 100644
      auto filterFormats = [this](std::optional<uint32_t> bpc, bool withExternalOnlyYUV) {
          FormatModifierMap set;
 diff --git a/src/opengl/eglcontext.cpp b/src/opengl/eglcontext.cpp
-index 0f1e20a..50bbc29 100644
 --- a/src/opengl/eglcontext.cpp
 +++ b/src/opengl/eglcontext.cpp
-@@ -32,11 +32,15 @@ EglContext *EglContext::s_currentContext = nullptr;
+@@ -32,11 +32,15 @@ EglContext *EglContext::s_currentContext
  
  std::shared_ptr<EglContext> EglContext::create(EglDisplay *display, EGLConfig config, EglContext *sharedContext)
  {
@@ -304,11 +316,26 @@ index 0f1e20a..50bbc29 100644
  }
  
  bool EglContext::makeCurrent(EGLSurface surface)
+@@ -542,6 +546,15 @@ void EglContext::glResolveFunctions(cons
+             }
+         }
+     }
++    if (!robustContext && (haveArbRobustness || haveExtRobustness)) {
++        // Reset notification does not depend on robust buffer access: a context created with
++        // EGL_LOSE_CONTEXT_ON_RESET is told of a reset whether or not the implementation also
++        // provides robust access (which it may decline, and then reports neither the access flag
++        // nor GL_CONTEXT_ROBUST_ACCESS). Its reset strategy says it asked to be told.
++        GLint strategy = 0;
++        glGetIntegerv(GL_RESET_NOTIFICATION_STRATEGY_ARB, &strategy);
++        robustContext = strategy == GL_LOSE_CONTEXT_ON_RESET_ARB;
++    }
+     if (robustContext && haveArbRobustness) {
+         // See https://www.opengl.org/registry/specs/ARB/robustness.txt
+         m_glGetGraphicsResetStatus = (glGetGraphicsResetStatus_func)resolveFunction("glGetGraphicsResetStatusARB");
 diff --git a/src/opengl/egldisplay.cpp b/src/opengl/egldisplay.cpp
-index 067e92e..931526e 100644
 --- a/src/opengl/egldisplay.cpp
 +++ b/src/opengl/egldisplay.cpp
-@@ -84,7 +84,7 @@ std::unique_ptr<EglDisplay> EglDisplay::create(::EGLDisplay display, DrmDevice *
+@@ -84,7 +84,7 @@ std::unique_ptr<EglDisplay> EglDisplay::
          QByteArrayLiteral("EGL_KHR_surfaceless_context"),
      };
      for (const QByteArray &extensionName : requiredExtensions) {
@@ -317,7 +344,7 @@ index 067e92e..931526e 100644
              qCWarning(KWIN_OPENGL) << extensionName << "extension is unsupported";
              return nullptr;
          }
-@@ -141,9 +141,29 @@ EglDisplay::~EglDisplay()
+@@ -141,9 +141,38 @@ EglDisplay::~EglDisplay()
      for (const auto &image : m_importCache) {
          destroyImage(image);
      }
@@ -344,14 +371,33 @@ index 067e92e..931526e 100644
 +    return m_defaultConfig;
 +}
 +
++void EglDisplay::dropImportedImages()
++{
++    // Failed imports are cached too (EGL_NO_IMAGE_KHR); they go as well, and are tried again.
++    for (const auto &image : std::as_const(m_importCache)) {
++        destroyImage(image);
++    }
++    m_importCache.clear();
++}
++
  QList<QByteArray> EglDisplay::extensions() const
  {
      return m_extensions;
+@@ -386,6 +415,10 @@ EGLImageKHR EglDisplay::createImage(EGLC
+ 
+ void EglDisplay::destroyImage(EGLImageKHR image) const
+ {
++    // A buffer whose image was dropped (dropImportedImages) and not imported again has none.
++    if (image == EGL_NO_IMAGE_KHR) {
++        return;
++    }
+     Q_ASSERT(m_functions.destroyImageKHR);
+     m_functions.destroyImageKHR(m_handle, image);
+ }
 diff --git a/src/opengl/egldisplay.h b/src/opengl/egldisplay.h
-index 1de384b..9a04ae5 100644
 --- a/src/opengl/egldisplay.h
 +++ b/src/opengl/egldisplay.h
-@@ -39,6 +39,12 @@ public:
+@@ -39,6 +39,17 @@ public:
      ::EGLDisplay handle() const;
      bool hasExtension(const QByteArray &name) const;
  
@@ -360,11 +406,16 @@ index 1de384b..9a04ae5 100644
 +    void setDefaultSurface(EGLSurface surface, EGLConfig config);
 +    EGLSurface defaultSurface() const;
 +    EGLConfig defaultConfig() const;
++    // Destroys every image imported from a client buffer, so each buffer is imported again when
++    // it is next used. For a provider whose images belong to the contexts' session: after that
++    // session was lost and the contexts were recreated on a new one, the old images name nothing
++    // the new session holds.
++    void dropImportedImages();
 +
      QString renderNode() const;
      std::optional<dev_t> renderDevNode() const;
  
-@@ -71,6 +77,8 @@ private:
+@@ -71,6 +82,8 @@ private:
      Formats queryImportFormats() const;
      QString determineRenderNode() const;
  
@@ -485,3 +536,21 @@ index cb51ca2..65b8e33 100644
          return std::nullopt;
      }
  
+diff --git a/src/plugins/qpa/eglplatformcontext.cpp b/src/plugins/qpa/eglplatformcontext.cpp
+--- a/src/plugins/qpa/eglplatformcontext.cpp
++++ b/src/plugins/qpa/eglplatformcontext.cpp
+@@ -66,6 +66,14 @@ bool EGLPlatformContext::makeCurrent(QPl
+     const bool ok = m_eglContext->makeCurrent();
+     if (!ok) {
+         qCWarning(KWIN_QPA) << "eglMakeCurrent failed:" << getEglErrorString();
++        if (qEnvironmentVariableIntValue("ANLAND_MOBILEGL") == 1) {
++            // A context of a lost MobileGL session cannot be made current again (EGL_CONTEXT_LOST)
++            // and never reports its reset through a make-current that succeeded: drop it as the
++            // reset arm below does, so Qt sees an invalid context and creates a new one.
++            m_renderTargets.clear();
++            m_zombieRenderTargets.clear();
++            m_eglContext.reset();
++        }
+         return false;
+     }
+     if (m_eglContext->checkGraphicsResetStatus() != GL_NO_ERROR) {
