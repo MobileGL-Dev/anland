@@ -145,7 +145,34 @@ case "$MODE" in
         # that path Chrome never sends its fractional-scale viewport, so on this scale-2 output
         # the window would show at twice its size; with integer scaling it sends
         # wl_surface.set_buffer_scale, which the frames MobileGL attaches then carry.
+        #
+        # MOBILEGL_CHROME_GPU=process runs the GPU in its own process instead, which is what lets
+        # Chrome survive a GPU device loss: ANGLE's GLES-on-EGL backend renders every Chrome
+        # context through ONE native context it creates when its EGL display initializes, and
+        # never makes another while that display lives - so after a loss the in-process GPU keeps
+        # re-binding the lost context. Chrome's answer to a lost ANGLE context is to restart the
+        # GPU process (a new ANGLE display, a new MobileGL session), which it cannot do in-process.
+        # The GPU process presents through GBM dma-bufs: libgbm loads mobilegl_gbm (GBM_BACKEND,
+        # set system-wide) on the session's render node, whose buffers are MobileGL server images
+        # that KWin imports. Its sandbox stays off (MOBILEGL_CHROME_GPU_SANDBOX=on keeps it, to
+        # try): it starts after GL is up and from then on refuses the GPU process any socket() or
+        # connect() - a second connection to the server's endpoint - and files it was not
+        # brokered, MobileGL's config and log among them. That is no worse than in-process, where
+        # the same GPU code runs unsandboxed inside the browser.
         export MOBILEGL_IPC_SURFACE=offscreen
+        if [ "${MOBILEGL_CHROME_GPU:-in-process}" = process ]; then
+            if [ "$MOBILEGL_GBM_NODE" = /dev/null ]; then
+                echo "MOBILEGL_CHROME_GPU=process needs a render node for GBM; running the GPU in-process" >&2
+            else
+                export GBM_BACKEND=mobilegl MOBILEGL_GBM_NODE MOBILEGL_DEVICE_DRM_NODE
+                sandbox=--disable-gpu-sandbox
+                [ "${MOBILEGL_CHROME_GPU_SANDBOX:-off}" = on ] && sandbox=
+                exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
+                    $sandbox --ignore-gpu-blocklist \
+                    --render-node-override="$MOBILEGL_DEVICE_DRM_NODE" \
+                    --disable-features=WaylandFractionalScaleV1 "$@"
+            fi
+        fi
         exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
             --in-process-gpu --ignore-gpu-blocklist \
             --render-node-override=/dev/dri/mobilegl-no-render-node \
