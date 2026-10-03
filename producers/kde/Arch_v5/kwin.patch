@@ -452,7 +452,7 @@ index 7ebdecf..2e39d15 100644
 +        env.remove("DISPLAY");
 +        if (qEnvironmentVariable("ANLAND_XWAYLAND_GLAMOR") != QLatin1String("0")) {
 +            env.insert("MOBILEGL_IPC_SURFACE", QStringLiteral("offscreen"));
-+            env.insert("MOBILEGL_LOG_FILE_PATH", QStringLiteral("/tmp/mgl-xwayland"));
++            env.insert("MOBILEGL_LOG_FILE_PATH", QStringLiteral("/tmp/mgl-xwayland.log"));
 +            env.insert("GBM_BACKEND", QStringLiteral("mobilegl"));
 +            env.remove("LIBGL_ALWAYS_SOFTWARE");
 +            env.remove("GALLIUM_DRIVER");
