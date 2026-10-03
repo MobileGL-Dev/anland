@@ -163,6 +163,14 @@ case "$MODE" in
         # Either way Chrome does not send its fractional-scale viewport on this scale-2 output, so
         # the window would show at twice its size; with integer scaling it sends
         # wl_surface.set_buffer_scale instead.
+        #
+        # Video is decoded in software (--disable-accelerated-video-decode). The render node the
+        # GPU process gets has a VA-API driver in this container, so Chrome would otherwise decode
+        # into that driver's own NV12 dma-bufs and bind them as external textures: MobileGL imports
+        # only the RGBA images its server allocated (the Vulkan driver has no dma-buf import, and
+        # GL_OES_EGL_image_external is not offered), so the GPU process aborts on the first decoded
+        # frame - the window flickers as Chrome restarts it and the video stops, over and over.
+        # In-process the render node is a dummy and VA-API never opens; the switch keeps both alike.
         export MOBILEGL_IPC_SURFACE=offscreen
         if [ "${MOBILEGL_CHROME_GPU:-process}" = process ]; then
             if [ "$MOBILEGL_GBM_NODE" = /dev/null ]; then
@@ -172,13 +180,13 @@ case "$MODE" in
                 sandbox=--disable-gpu-sandbox
                 [ "${MOBILEGL_CHROME_GPU_SANDBOX:-off}" = on ] && sandbox=
                 exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
-                    $sandbox --ignore-gpu-blocklist \
+                    $sandbox --ignore-gpu-blocklist --disable-accelerated-video-decode \
                     --render-node-override="$MOBILEGL_DEVICE_DRM_NODE" \
                     --disable-features=WaylandFractionalScaleV1 "$@"
             fi
         fi
         exec "$CHROME_BIN" --ozone-platform=wayland --use-gl=angle --use-angle=gles \
-            --in-process-gpu --ignore-gpu-blocklist \
+            --in-process-gpu --ignore-gpu-blocklist --disable-accelerated-video-decode \
             --render-node-override=/dev/dri/mobilegl-no-render-node \
             --disable-features=WaylandFractionalScaleV1 "$@"
         ;;
