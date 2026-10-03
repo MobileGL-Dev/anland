@@ -78,8 +78,12 @@ final class MobileGLDesktop {
         File script = new File(context.getFilesDir(), SCRIPT);
         try (InputStream in = context.getAssets().open(SCRIPT);
              OutputStream out = new FileOutputStream(script)) {
+            // A Windows checkout may have given the script CRLF endings; sh would choke on them.
             byte[] buffer = new byte[8192];
-            for (int n; (n = in.read(buffer)) > 0; ) out.write(buffer, 0, n);
+            for (int n; (n = in.read(buffer)) > 0; ) {
+                for (int i = 0; i < n; i++)
+                    if (buffer[i] != (byte) 13) out.write(buffer[i]);
+            }
         } catch (IOException error) {
             Log.e(TAG, "Could not unpack " + SCRIPT, error);
             return false;
